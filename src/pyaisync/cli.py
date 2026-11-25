@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import __version__
-from .config import AI_DIR
+from .config import AI_DIR, load_config, set_targets
 from .errors import PyAisyncError
 from .importers import import_target
 from .loader import load_model
@@ -111,6 +111,11 @@ def cmd_init(args: argparse.Namespace, root: Path) -> int:
             atomic_write(ai / rel, content.encode())
         atomic_write(ai / "skills/.gitkeep", b"")
     print(f"Created {AI_DIR}/ with targets: {', '.join(targets)}")
+    if len(targets) < len(ALL_TARGETS):
+        print(
+            f'  (chosen from the tools found in this repo; to add others, edit "targets" in '
+            f'{AI_DIR}/config.toml, e.g. targets = ["claude", "cursor", "opencode"])'
+        )
     if args.from_target:
         _print_import(import_target(root, args.from_target, on_conflict="skip", write=True))
     others = [t for t in existing if t != args.from_target]
@@ -181,6 +186,17 @@ def _print_report(rep: Report, *, write: bool) -> None:
         print(f"  CONFLICT: {c}", file=sys.stderr)
 
 
+def _targets_line(targets: tuple[str, ...]) -> str:
+    line = f"Targets: {', '.join(targets)}"
+    missing = [t for t in ALL_TARGETS if t not in targets]
+    if missing:
+        line += (
+            f'  (not enabled: {", ".join(missing)} - add them to "targets" in '
+            f"{AI_DIR}/config.toml, or pass --targets)"
+        )
+    return line
+
+
 def cmd_generate(args: argparse.Namespace, root: Path, *, check: bool = False) -> int:
     model = load_model(root)
     targets = _csv(args.targets, ALL_TARGETS, "targets") or model.config.targets
@@ -189,6 +205,7 @@ def cmd_generate(args: argparse.Namespace, root: Path, *, check: bool = False) -
         feats = {f: (f in only) and model.config.features[f] for f in FEATURES}
         model = replace(model, config=replace(model.config, features=feats))
     plan = build_plan(model, targets)
+    print(_targets_line(targets))
     write = not (check or args.dry_run)
     rep = apply(root, plan, write=write, force=args.force, adopt=args.adopt)
     _print_report(rep, write=write and not rep.conflicts)
@@ -227,14 +244,55 @@ def cmd_plugin(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
-def cmd_list(args: argparse.Namespace, root: Path) -> int:
-    print("target     " + "  ".join(f"{f:9}" for f in FEATURES))
-    for name, tgt in REGISTRY.items():
+def cmd_target(args: argparse.Namespace, root: Path) -> int:
+    current = load_config(root).targets
+    wanted = tuple(dict.fromkeys(args.names))
+    if args.action == "add":
+        new = (*current, *[t for t in wanted if t not in current])
+        already = [t for t in wanted if t in current]
+    else:
+        new = tuple(t for t in current if t not in wanted)
+        already = [t for t in wanted if t not in current]
+        if not new:
+            raise PyAisyncError("refusing to disable every target; at least one must stay enabled")
+    if already:
+        state = "already enabled" if args.action == "add" else "was not enabled"
+        print(f"  note: {', '.join(already)} {state}")
+    if new != current:
+        set_targets(root, new)
+    changed = [t for t in wanted if t not in already]
+    verb = "Enabled" if args.action == "add" else "Disabled"
+    print(f"{verb}: {', '.join(changed) or 'nothing to change'}.  Targets: {', '.join(new)}")
+    if args.action == "add":
+        found = [t for t in changed if t in detect_targets(root)]
+        for t in found:
+            print(
+                f"  Found existing {t} configuration in this repo: pyaisync import {t}  (to bring it into {AI_DIR}/)"
+            )
+        print("Next: pyaisync generate --dry-run   (then pyaisync generate)")
+    elif changed:
         print(
-            f"{name:10} "
-            + "  ".join(f"{('yes' if f in tgt.supported else 'no'):9}" for f in FEATURES)
+            "Next: pyaisync generate   (removes the files pyaisync generated for it; your own files stay)"
         )
-    print("\nPlugins: `pyaisync plugin claude` packages .ai/ as a Claude Code plugin.")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace, root: Path) -> int:
+    try:
+        enabled: tuple[str, ...] | None = load_config(root).targets
+    except PyAisyncError:
+        enabled = None  # no .ai/ here: just show what each tool supports
+    header = "target     " + ("enabled  " if enabled is not None else "")
+    print(header + "  ".join(f"{f:11}" for f in FEATURES))
+    for name, tgt in REGISTRY.items():
+        mark = "" if enabled is None else f"{('yes' if name in enabled else 'no'):9}"
+        print(
+            f"{name:10} {mark}"
+            + "  ".join(f"{('yes' if f in tgt.supported else 'no'):11}" for f in FEATURES)
+        )
+    if enabled is not None:
+        print("\nEnable or disable a tool: pyaisync target add|remove <claude|cursor|opencode>")
+    print("Plugins: `pyaisync plugin claude` packages .ai/ as a Claude Code plugin.")
     return 0
 
 
@@ -287,6 +345,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true", help="overwrite managed files edited by hand")
     s.add_argument("--adopt", action="store_true", help="take over existing unmanaged files")
     s.set_defaults(fn=cmd_plugin)
+
+    s = sub.add_parser("target", help="enable or disable a tool in .ai/config.toml")
+    s.add_argument("action", choices=("add", "remove"))
+    s.add_argument("names", nargs="+", choices=ALL_TARGETS, metavar="TARGET")
+    s.set_defaults(fn=cmd_target)
 
     s = sub.add_parser("list", help="support matrix per target")
     s.set_defaults(fn=cmd_list)

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .errors import PyAisyncError
 from .model import ALL_TARGETS, FEATURES, Config, PluginMeta
+from .safefs import atomic_write
 
 AI_DIR = ".ai"
 
@@ -61,3 +62,36 @@ def _plugin(raw: object, path: Path) -> PluginMeta | None:
         author=raw.get("author", ""),
         license=raw.get("license", ""),
     )
+
+
+_VERSION_LINE = re.compile(r"^version\s*=.*$", re.MULTILINE)
+_TARGETS_KEY = re.compile(r"^targets\s*=\s*\[.*?\]", re.MULTILINE | re.DOTALL)
+_FIRST_TABLE = re.compile(r"^\[", re.MULTILINE)
+
+
+def set_targets(root: Path, targets: tuple[str, ...]) -> None:
+    """Rewrite only the top-level `targets` list of `.ai/config.toml`, keeping comments and tables."""
+    bad = [t for t in targets if t not in ALL_TARGETS]
+    if bad or not targets:
+        raise PyAisyncError(f"invalid targets {list(targets)}; valid: {list(ALL_TARGETS)}")
+    path = root / AI_DIR / "config.toml"
+    if not path.is_file():
+        raise PyAisyncError(f"{AI_DIR}/config.toml not found (did you run 'pyaisync init'?)")
+    text = path.read_text(encoding="utf-8")
+    line = "targets = [" + ", ".join(f'"{t}"' for t in targets) + "]"
+    table = _FIRST_TABLE.search(text)
+    head, tail = (text[: table.start()], text[table.start() :]) if table else (text, "")
+    if _TARGETS_KEY.search(head):
+        head = _TARGETS_KEY.sub(lambda _m: line, head, count=1)
+    elif _VERSION_LINE.search(head):
+        head = _VERSION_LINE.sub(lambda m: m.group(0) + "\n" + line, head, count=1)
+    else:
+        head = line + "\n" + head
+    new_text = head + tail
+    try:
+        ok = tomllib.loads(new_text).get("targets") == list(targets)
+    except tomllib.TOMLDecodeError:
+        ok = False
+    if not ok:  # never write something we could not verify
+        raise PyAisyncError(f"could not update 'targets' in {path}; edit it by hand")
+    atomic_write(path, new_text.encode("utf-8"))

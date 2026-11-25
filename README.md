@@ -79,6 +79,37 @@ uv run pyaisync generate --adopt     # first time only: take over your existing 
 After the first `generate --adopt`, the generated files are owned by pyaisync: edit `.ai/` from then on. Your own
 entries in shared JSON files (`.mcp.json`, `.claude/settings.json`, `opencode.json`, ...) are never touched.
 
+### Choose which tools to generate for
+
+The tools are the `targets` list in `.ai/config.toml`; `generate` and `check` print which ones are enabled.
+
+```toml
+# .ai/config.toml
+targets = ["claude", "cursor", "opencode"]
+```
+
+`init` fills it with the tools it **finds in the repo** (for example only `cursor` if you only have `.cursor/`), or all
+three in an empty repo. To change it, use the command instead of editing the file:
+
+```bash
+uv run pyaisync target add claude        # enable Claude Code (also: cursor, opencode; several at once)
+uv run pyaisync target remove cursor     # disable one (the next generate removes only what pyaisync generated for it)
+uv run pyaisync list                     # shows which tools are enabled and what each one supports
+uv run pyaisync generate                 # apply
+```
+
+`target add` also tells you when that tool already has configuration in the repo, so you can bring it in with
+`pyaisync import <tool>` first. To try a tool once without changing the config, pass `--targets claude` to `generate`. Skills are written once, to `.claude/skills/` when `claude` is enabled and otherwise to
+`.agents/skills/` (that is why a repo without `claude` gets `.agents/`).
+
+### Day to day
+
+```bash
+# edit anything in .ai/, then:
+uv run pyaisync generate
+git add -A && git commit
+```
+
 ### What goes where in `.ai/`
 
 | You want to define | Put it in | It becomes |
@@ -114,14 +145,6 @@ When you **import** hooks, the scripts their commands run (from `.cursor/hooks/`
 are **copied** into `.ai/hooks/` (permissions kept) and the commands are rewritten to point at the copies. Your original files
 are left alone; delete them when you are satisfied. If a script needs other files from its folder (helpers, config),
 `import` lists them: copy those to `.ai/hooks/` yourself.
-
-### Day to day
-
-```bash
-# edit anything in .ai/, then:
-uv run pyaisync generate
-git add -A && git commit
-```
 
 The plan this project implements is [PLAN.md](PLAN.md).
 

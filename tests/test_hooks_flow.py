@@ -283,3 +283,26 @@ def test_init_from_suggests_the_other_tools_too(tmp_path: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert "Also found cursor configuration: pyaisync import cursor" in out
     assert "generate --adopt" in out
+
+
+def test_generate_says_which_tools_are_enabled(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    (tmp_path / ".cursor").mkdir()
+    assert run(tmp_path, "init") == 0
+    assert 'targets = ["cursor"]' in (tmp_path / ".ai/config.toml").read_text()
+    init_out = capsys.readouterr().out
+    assert (
+        "chosen from the tools found" in init_out and '"claude", "cursor", "opencode"' in init_out
+    )
+    write(tmp_path, ".ai/rules/r.md", "---\nalways: true\n---\nx\n")
+    write(tmp_path, ".ai/skills/s/SKILL.md", "---\nname: s\ndescription: d\n---\nx\n")
+    assert run(tmp_path, "generate") == 0
+    out = capsys.readouterr().out
+    assert "Targets: cursor" in out and "not enabled: claude, opencode" in out
+    assert (tmp_path / ".agents/skills/s/SKILL.md").is_file() and not (
+        tmp_path / "CLAUDE.md"
+    ).exists()
+    # enabling Claude is a config change, not a separate process
+    write(tmp_path, ".ai/config.toml", 'version = 1\ntargets = ["claude", "cursor"]\n')
+    assert run(tmp_path, "generate") == 0
+    assert (tmp_path / "CLAUDE.md").is_file() and (tmp_path / ".claude/skills/s/SKILL.md").is_file()
+    assert not (tmp_path / ".agents").exists()  # the old copy is removed: one copy only
