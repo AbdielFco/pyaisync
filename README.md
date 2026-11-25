@@ -7,6 +7,56 @@ Status: **complete (phases 0-4)**: rules, commands, skills, subagents, MCP, hook
 `init`, `generate`, `check`, `list`, `import` (every feature) and `plugin claude`.
 See [PLAN.md](PLAN.md) for the design and [docs/formats](docs/formats/README.md) for the native formats it targets.
 
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph SRC[".ai/ (single source, committed)"]
+        direction TB
+        S1["config.toml"]
+        S2["rules, commands, agents<br/>(Markdown + frontmatter)"]
+        S3["skills/ (SKILL.md)"]
+        S4["mcp, hooks, permissions<br/>(TOML)"]
+    end
+
+    SRC -->|"loader: parse + validate"| M["Model<br/>(frozen dataclasses)"]
+    M --> A{"adapter per target"}
+    A --> C["Claude Code"]
+    A --> U["Cursor"]
+    A --> O["OpenCode"]
+    C --> P["Plan<br/>files + JSON merges<br/>+ warnings + hook notices"]
+    U --> P
+    O --> P
+    P --> W{"writer<br/>(manifest + hashes)"}
+    W -->|"generate"| D["native files on disk"]
+    W -->|"generate --dry-run / check"| R["diff / drift report<br/>(exit 1 on drift)"]
+
+    N["native config<br/>(CLAUDE.md, .mcp.json, ...)"] -->|"import"| SRC
+    SRC -->|"plugin claude"| G["dist/&lt;name&gt;/<br/>Claude Code plugin"]
+```
+
+What the writer does with each file it is about to write (any conflict aborts **before** anything is written):
+
+```mermaid
+flowchart TD
+    F["planned file or JSON entry"] --> X{"exists on disk?"}
+    X -- no --> CR["create"]
+    X -- yes --> Q{"same content?"}
+    Q -- yes --> UN["unchanged<br/>(becomes owned)"]
+    Q -- no --> MG{"in the manifest?"}
+    MG -- "no (not ours)" --> AD{"--adopt or --force?"}
+    AD -- yes --> UP["update"]
+    AD -- no --> CF["CONFLICT<br/>nothing is written"]
+    MG -- yes --> HE{"disk still matches<br/>the recorded hash?"}
+    HE -- yes --> UP
+    HE -- "no (hand edited)" --> FO{"--force?"}
+    FO -- yes --> UP
+    FO -- no --> CF
+```
+
+Typical workflow: `init` (or `init --from <tool>` to migrate an existing setup) -> edit `.ai/` -> `generate` ->
+commit both; `check` in CI or a pre-commit hook fails when the generated files drift from `.ai/`.
+
 ## Usage (uv)
 
 ```bash
@@ -150,4 +200,5 @@ Features a target cannot express are skipped **with a warning**, never approxima
 - Rejects names containing `..`, absolute paths and symlinks.
 - Rejects literal secrets in `mcp.toml` (sensitive-looking keys must use `${VAR}`).
 
-Development: `uv run pytest`, `uv run ruff check .`, `uv run mypy`.
+Development: `uv run pytest`, `uv run ruff check .`, `uv run mypy`. Contributors and AI agents: see
+[AGENTS.md](AGENTS.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
