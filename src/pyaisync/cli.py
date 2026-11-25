@@ -38,6 +38,25 @@ _TEMPLATES = {
         '# args = ["my-mcp-server"]\n'
         '# env = { API_KEY = "${MY_API_KEY}" }\n'
     ),
+    "hooks.toml": (
+        "# Hooks run COMMANDS on your machine. Review them like code.\n"
+        "# Events: session_start, session_end, pre_tool_use, post_tool_use,\n"
+        "#         user_prompt_submit, stop, subagent_start, subagent_stop, pre_compact\n"
+        "# OpenCode has no declarative hooks (they are skipped for it).\n"
+        "#\n"
+        "# [[hooks]]\n"
+        '# event = "pre_tool_use"\n'
+        '# matcher = ["shell"]              # tools: read, grep, glob, edit, shell, web\n'
+        '# command = "./scripts/guard.sh"   # relative to the repository root\n'
+        "# timeout = 30                     # seconds, optional\n"
+    ),
+    "permissions.toml": (
+        "# Rules are 'tool' or 'tool(pattern)'; tools: read, grep, glob, edit, shell, web.\n"
+        "#\n"
+        '# allow = ["shell(uv run pytest*)"]\n'
+        '# ask   = ["shell(git push*)"]\n'
+        '# deny  = ["read(.env*)", "shell(rm -rf*)"]\n'
+    ),
     "commands/example.md": (
         "---\ndescription: Example command\n---\nSummarize the uncommitted changes. $ARGUMENTS\n"
     ),
@@ -124,6 +143,10 @@ def _print_report(rep: Report, *, write: bool) -> None:
         for p in getattr(rep, attr):
             print(f"  {label} {p}")
     print(f"  unchanged: {len(rep.unchanged)}")
+    if rep.notices:
+        print("  hooks (these run commands on your machine; review them):")
+        for n in rep.notices:
+            print(f"    {n}")
     for w in rep.warnings:
         print(f"  warning: {w}", file=sys.stderr)
     for c in rep.conflicts:
@@ -162,7 +185,7 @@ def cmd_list(args: argparse.Namespace, root: Path) -> int:
             f"{name:10} "
             + "  ".join(f"{('yes' if f in tgt.supported else 'no'):9}" for f in FEATURES)
         )
-    print("\nNot implemented yet (phases 3-4): hooks, permissions, plugins.")
+    print("\nNot implemented yet (phase 4): plugins.")
     return 0
 
 

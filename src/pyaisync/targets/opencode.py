@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .. import frontmatter
-from ..model import Agent, McpServer, Model
-from ..vocab import OPENCODE_ACTIONS, translate_env
+from ..model import Agent, McpServer, Model, PermissionSet
+from ..vocab import OPENCODE_ACTIONS, parse_rule, translate_env
 from .base import HEADER, JsonMerge, Output, Plan, command_meta, rules_document, text
 
 _ENV = "{env:{name}}"  # OpenCode substitution syntax
@@ -51,9 +51,20 @@ def _server(s: McpServer) -> dict[str, Any] | None:
     return entry
 
 
+def _permission_items(perms: PermissionSet) -> list[dict[str, str]]:
+    """Ordered rules; the last matching rule wins, so deny comes last."""
+    items: list[dict[str, str]] = []
+    for effect in ("allow", "ask", "deny"):
+        for rule in getattr(perms, effect):
+            tool, pattern = parse_rule(rule, "permissions")
+            for action in OPENCODE_ACTIONS[tool]:
+                items.append({"action": action, "resource": pattern or "*", "effect": effect})
+    return items
+
+
 class OpenCode:
     name = "opencode"
-    supported = frozenset({"rules", "commands", "skills", "subagents", "mcp"})
+    supported = frozenset({"rules", "commands", "skills", "subagents", "mcp", "permissions"})
 
     def plan(self, model: Model) -> Plan:
         m = model.for_target(self.name)
@@ -86,4 +97,13 @@ class OpenCode:
                     entries[s.name] = entry
             if entries:
                 merges.append(JsonMerge("opencode.json", ("mcp", "servers"), entries))
+        if feats["hooks"]:
+            for h in m.hooks:
+                warnings.append(
+                    f"hook {h.event} ({h.command}): OpenCode has no declarative hooks; skipped"
+                )
+        if feats["permissions"] and m.permissions:
+            merges.append(
+                JsonMerge("opencode.json", ("permissions",), _permission_items(m.permissions))
+            )
         return Plan(outs, warnings, merges)

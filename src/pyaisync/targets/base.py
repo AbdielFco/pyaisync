@@ -17,15 +17,16 @@ class Output:
 
 @dataclass(frozen=True)
 class JsonMerge:
-    """Entries pyaisync owns inside a (possibly user-edited) JSON file.
+    """Content pyaisync owns inside a (possibly user-edited) JSON file.
 
-    `entries` are written under `key_path` (e.g. ("mcpServers",)); everything else in the file
-    is left untouched.
+    `entries` is either a dict (named entries written under `key_path`, e.g. MCP servers) or a
+    list (items appended to the array at `key_path`, e.g. hook groups or permission rules).
+    Everything else in the file is left untouched.
     """
 
     path: str
     key_path: tuple[str, ...]
-    entries: dict[str, Any]
+    entries: dict[str, Any] | list[Any]
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class Plan:
     outputs: list[Output]
     warnings: list[str]
     merges: list[JsonMerge] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)  # shown prominently (e.g. hooks)
 
 
 class Target(Protocol):

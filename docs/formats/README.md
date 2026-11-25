@@ -75,5 +75,56 @@ for that skill, otherwise `.agents/skills/`. This avoids duplicates and drift.
 Env references in `.ai/mcp.toml` are written as `${VAR}` and translated per target
 (`${VAR}` Claude, `${env:VAR}` Cursor, `{env:VAR}` OpenCode).
 
-## Still to verify (Phase 3)
-hooks and permissions for the 3 targets.
+## Phase 3 — hooks and permissions (verified 2026-11-25)
+
+### Claude Code — https://code.claude.com/docs/en/hooks , /permissions
+- Hooks live in `.claude/settings.json` under `hooks`: `{ "<Event>": [ { "matcher": "...", "hooks": [ { "type": "command",
+  "command": "...", "timeout": <seconds> } ] } ] }`. A matcher made only of letters, digits, `_`, `-`, spaces, `,` and `|` is an
+  exact tool name (or a `|` list); an omitted matcher matches everything. Hook commands run in the session's current directory,
+  so prefer paths that do not depend on it.
+- Permissions live in `.claude/settings.json` under `permissions.allow|ask|deny` as rule strings: `Bash(npm run *)`,
+  `Read(./.env)`, `Edit(path)` (covers all file-editing tools), `WebFetch(domain:example.com)`. `Read` deny rules are applied
+  best-effort to Grep/Glob.
+
+### Cursor — https://cursor.com/docs/hooks , /cli/reference/permissions
+- Hooks live in `.cursor/hooks.json`: `{ "version": 1, "hooks": { "<event>": [ { "command", "timeout", "matcher" } ] } }`.
+  Project hooks run from the project root. For `preToolUse`/`postToolUse` the matcher is a regex over the tool type
+  (`Shell`, `Read`, `Write`, `Grep`, `Delete`, `Task`, `MCP:<tool>`). There is no `Glob` or web tool name to match.
+- Permissions exist **only for the Cursor CLI**, in `.cursor/cli.json` under `permissions.allow|deny` (no `ask`):
+  `Shell(commandBase)` / `Shell(base:args)`, `Read(glob)`, `Write(glob)`, `WebFetch(domain)`, `Mcp(server:tool)`.
+  Deny rules win over allow.
+
+### OpenCode (V2 docs) — https://opencode.ai/docs/permissions , /plugins
+- Permissions: top-level `permissions` array of `{action, resource, effect}` in `opencode.json`; **the last matching rule wins**;
+  an unmatched action asks. `pyaisync` emits allow, then ask, then deny, so deny always wins.
+- Hooks: OpenCode has no declarative hooks (it uses JS/TS plugins). `pyaisync` skips them with a warning.
+
+## Canonical hook events (source `.ai/hooks.toml`)
+
+| canonical | Claude Code | Cursor |
+|---|---|---|
+| session_start | SessionStart | sessionStart |
+| session_end | SessionEnd | sessionEnd |
+| pre_tool_use | PreToolUse | preToolUse |
+| post_tool_use | PostToolUse | postToolUse |
+| user_prompt_submit | UserPromptSubmit | beforeSubmitPrompt |
+| stop | Stop | stop |
+| subagent_start | SubagentStart | subagentStart |
+| subagent_stop | SubagentStop | subagentStop |
+| pre_compact | PreCompact | preCompact |
+
+`matcher = ["shell", "edit"]` is only accepted for `pre_tool_use` / `post_tool_use`. A tool Cursor cannot match
+(`glob`, `web`) makes the hook be **skipped for Cursor with a warning** rather than silently widened to every tool.
+
+## Canonical permission rules (source `.ai/permissions.toml`)
+`allow` / `ask` / `deny` lists of `tool` or `tool(pattern)`, with tool in `read grep glob edit shell web`.
+
+| canonical | Claude Code | Cursor CLI | OpenCode |
+|---|---|---|---|
+| `read(p)` | `Read(p)` | `Read(p)` | `read` |
+| `edit(p)` | `Edit(p)` | `Write(p)` | `edit` |
+| `shell(a b*)` | `Bash(a b*)` | `Shell(a:b*)` | `shell` |
+| `web(d)` | `WebFetch(domain:d)` | `WebFetch(d)` | `webfetch` + `websearch` |
+| `grep` / `glob` (bare) | `Grep` / `Glob` | skipped (warning) | `grep` / `glob` |
+
+Rules with no equivalent are skipped with a warning, never approximated.

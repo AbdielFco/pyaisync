@@ -1,7 +1,7 @@
 # pyaisync — Implementation plan
 
-> Status: **Phases 0-2 implemented** (rules, commands, skills, subagents, mcp; init/generate/check/list/import).
-> Phases 3-4 pending. Verified formats live in `docs/formats/README.md`.
+> Status: **Phases 0-3 implemented** (rules, commands, skills, subagents, mcp, hooks, permissions; init/generate/check/list/import).
+> Phase 4 (full import + plugins) pending. Verified formats live in `docs/formats/README.md`.
 > Date: 2026-11-25
 
 ## 1. Goal
@@ -59,8 +59,8 @@ Verification status: ✅ confirmed in official docs · ⚠️ known format, not 
 | subagents | `.claude/agents/*.md` ✅ | `.cursor/agents/*.md` ✅ (no tool allowlist; `readonly` only) | `.opencode/agents/*.md` ✅ (V2) |
 | skills | `.claude/skills/<n>/SKILL.md` ✅ (read by all 3) | `.agents/skills/` or `.cursor/skills/` ✅ | `.agents/skills/` or `.opencode/skills/` ✅ |
 | mcp | `.mcp.json` (`mcpServers`) ✅ | `.cursor/mcp.json` (`mcpServers`) ✅ | `mcp.servers` in `opencode.json` ✅ (V2; Streamable HTTP only) |
-| hooks | `.claude/settings.json` ❓ | `.cursor/hooks.json` ❓ | JS/TS plugin (no declarative hooks) ❓ |
-| permissions | `.claude/settings.json` ❓ | limited ❓ | `permission` key in `opencode.json` ❓ |
+| hooks | `.claude/settings.json` (`hooks`) ✅ | `.cursor/hooks.json` ✅ | none declarative (JS/TS plugins) — skipped with a warning ✅ |
+| permissions | `.claude/settings.json` (`permissions`) ✅ | `.cursor/cli.json` (Cursor **CLI** only; no `ask`) ✅ | top-level `permissions` list in `opencode.json` (V2) ✅ |
 | plugins | `.claude-plugin/plugin.json` ✅ | ❓ | ❓ |
 
 Note: the OpenCode docs differ between V1 and V2 (e.g. flat `mcp` vs `mcp.servers`).
@@ -108,7 +108,8 @@ Decision: **V2 only** (see §13).
 
 ### 4.2 JSON merge (`opencode.json`, `.mcp.json`, `.cursor/mcp.json`; later `settings.json`) — implemented in Phase 2
 These files mix our keys with the user's. Rules:
-- Only the **entries recorded in the manifest** (`json.<file>.entries`, keyed by server name, with a hash of the value) are written/removed.
+- Two kinds of ownership, both recorded in the manifest (`json.<file>.ops`): **named entries** in an object (MCP servers, keyed by name with a hash of the value) and **list items** in an array (hook groups, permission rules; identified by the hash of the item's content).
+- List items are matched by content: an item pyaisync added is removed when it is no longer generated, but one you edited by hand is no longer recognized and is treated as yours (the regenerated item is appended next to it).
 - The rest of the JSON is preserved (keys and values; the file is re-serialized with 2-space indentation **only when an entry changes**).
 - A same-named entry that pyaisync does not own → conflict (`--adopt`); an owned entry edited by hand → conflict (`--force`).
 - When the last owned entry is removed, emptied parent objects are pruned and a file that pyaisync created itself is deleted.
@@ -128,8 +129,8 @@ hand-edited managed files. Meant for pre-commit and CI.
   agents/*.md                   # subagents
   skills/<name>/SKILL.md        # + auxiliary files (copied as-is)
   mcp.toml                      # MCP servers
-  hooks.toml                    # Phase 3
-  permissions.toml              # Phase 3
+  hooks.toml                    # hooks
+  permissions.toml              # permissions
   .manifest.json                # generated, committed
 ```
 
@@ -193,22 +194,23 @@ args = ["my-mcp-server"]
 env = { API_KEY = "${API_KEY}" }   # variable references only, never values
 ```
 
-`.ai/hooks.toml` (Phase 3)
+`.ai/hooks.toml`
 ```toml
 [[hooks]]
-event = "pre_tool_use"      # canonical pyaisync events
-matcher = "shell"
-command = "./scripts/guard.sh"
+event = "pre_tool_use"      # canonical pyaisync events (see docs/formats)
+matcher = ["shell"]         # canonical tools; only for pre_tool_use / post_tool_use
+command = "./scripts/guard.sh"   # one line, relative to the repository root
+timeout = 30                # seconds, optional
 ```
 
-`.ai/permissions.toml` (Phase 3)
+`.ai/permissions.toml`
 ```toml
 allow = ["shell(uv run pytest*)"]
 deny  = ["read(.env*)", "shell(rm -rf*)"]
 ask   = ["shell(git push*)"]
 ```
 
-### Canonical vocabulary (agent tools: Phase 2; hook events: Phase 3)
+### Canonical vocabulary (agent tools, hook events, permission rules)
 `pyaisync` defines its own names for tools (`read`, `grep`, `glob`, `edit`, `shell`, `web`) and, later, hook events
 (`pre_tool_use`, `post_tool_use`, `session_start`, ...). Each adapter translates them. A name with
 no equivalent in a target → warning, never silence. Secrets never go in the source: only `${VAR}`;
@@ -255,7 +257,7 @@ One adapter = one file, pure functions (input → output), testable without touc
 | Overwriting manual work | Manifest + hashes; never touches unmanaged files |
 | Path traversal / symlinks in names | Validated names (`[a-z0-9._-]`), paths resolved and checked under the root; symlinks are never followed |
 | Secrets in the repo | Only `${VAR}` in the source; the loader rejects literal values under sensitive-looking keys (`key`, `token`, `secret`, `password`, `auth`...) and known token formats |
-| Malicious hooks/MCP | Only written as data; the summary prominently lists generated hooks and MCP commands |
+| Malicious hooks/MCP | Only written as data; `generate` and `check` print every hook command that will run on the machine ("review them"); hook commands must be a single line and cannot contain literal tokens |
 | Supply chain | Runtime: `pyyaml` only; pinned version; `uv.lock` committed |
 | Non-deterministic output | Stable ordering, fixed JSON indentation, `\n` line endings |
 | Code making network calls | None in the package |
@@ -396,8 +398,8 @@ Dev tools: `pytest`, `ruff`, `mypy` (dev-dependencies only). The CLI uses `argpa
 
 ## 12. Phases and acceptance criteria
 
-**Progress (2026-11-25):** Phase 0 ✅ (rules, commands, skills, subagents, mcp verified; hooks/permissions
-still unverified) · Phase 1 ✅ · Phase 2 ✅ (53 tests, ruff and strict mypy green).
+**Progress (2026-11-25):** Phase 0 ✅ (all features verified) · Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅
+(76 tests, ruff and strict mypy green).
 **Documented deviation:** skills are written to one shared path (`.claude/skills/` or
 `.agents/skills/`) instead of one per target, because all 3 targets read those paths (see `docs/formats`).
 
@@ -421,7 +423,7 @@ Each phase leaves the package usable. Between phases a short security review (th
 4. **OpenCode version to support:** **V2 only** (decided in Phase 2). The V1 schema is not generated.
 5. **Minimum Python:** 3.11 (because of `tomllib`).
 6. **License:** MIT.
-7. **Scope:** Phases 1-2 done; Phase 3 (hooks, permissions) is next.
+7. **Scope:** Phases 1-3 done; Phase 4 (full import + plugins) is next.
 
 ## 14. Risks
 

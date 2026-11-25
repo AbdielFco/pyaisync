@@ -9,9 +9,27 @@ from typing import Any
 from . import frontmatter
 from .config import AI_DIR, load_config
 from .errors import PyAisyncError
-from .model import ALL_TARGETS, Agent, Command, McpServer, Model, Rule, Skill, validate_name
+from .model import (
+    ALL_TARGETS,
+    Agent,
+    Command,
+    Hook,
+    McpServer,
+    Model,
+    PermissionSet,
+    Rule,
+    Skill,
+    validate_name,
+)
 from .safefs import read_text, read_tree
-from .vocab import TOOLS, check_secret
+from .vocab import (
+    HOOK_EVENTS,
+    SECRET_VALUE,
+    TOOL_MATCHER_EVENTS,
+    TOOLS,
+    check_secret,
+    parse_rule,
+)
 
 
 def _targets(meta: dict[str, Any], src: Path) -> tuple[str, ...]:
@@ -105,6 +123,87 @@ def _load_mcp(path: Path) -> list[McpServer]:
     return out
 
 
+def _read_toml(path: Path) -> dict[str, Any]:
+    try:
+        return tomllib.loads(read_text(path))
+    except tomllib.TOMLDecodeError as exc:
+        raise PyAisyncError(f"{path}: invalid TOML: {exc}") from exc
+
+
+def _load_hooks(path: Path) -> list[Hook]:
+    if not path.is_file():
+        return []
+    raw = _read_toml(path).get("hooks", [])
+    if not isinstance(raw, list):
+        raise PyAisyncError(f"{path}: 'hooks' must be an array of tables ([[hooks]])")
+    out: list[Hook] = []
+    for i, cfg in enumerate(raw, 1):
+        where = f"{path} [[hooks]] #{i}"
+        if not isinstance(cfg, dict):
+            raise PyAisyncError(f"{where}: must be a table")
+        event = cfg.get("event")
+        if event not in HOOK_EVENTS:
+            raise PyAisyncError(f"{where}: 'event' must be one of {sorted(HOOK_EVENTS)}")
+        command = cfg.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise PyAisyncError(f"{where}: 'command' must be a non-empty string")
+        if "\n" in command or "\r" in command:
+            raise PyAisyncError(f"{where}: 'command' must be a single line")
+        if SECRET_VALUE.search(command):
+            raise PyAisyncError(f"{where}: 'command' contains what looks like a literal secret")
+        matcher = cfg.get("matcher", [])
+        if isinstance(matcher, str):
+            matcher = [matcher]
+        if not isinstance(matcher, list) or not all(isinstance(m, str) for m in matcher):
+            raise PyAisyncError(f"{where}: 'matcher' must be a tool name or a list of tool names")
+        bad = [m for m in matcher if m not in TOOLS]
+        if bad:
+            raise PyAisyncError(f"{where}: unknown tools in matcher {bad}; valid: {list(TOOLS)}")
+        if matcher and event not in TOOL_MATCHER_EVENTS:
+            raise PyAisyncError(
+                f"{where}: 'matcher' is only valid for {sorted(TOOL_MATCHER_EVENTS)}"
+            )
+        timeout = cfg.get("timeout")
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 3600
+        ):
+            raise PyAisyncError(
+                f"{where}: 'timeout' must be an integer between 1 and 3600 (seconds)"
+            )
+        out.append(
+            Hook(
+                event=event,
+                command=command.strip(),
+                matcher=tuple(dict.fromkeys(matcher)),
+                timeout=timeout,
+                targets=_targets(cfg, Path(where)),
+            )
+        )
+    return out
+
+
+def _load_permissions(path: Path) -> PermissionSet:
+    if not path.is_file():
+        return PermissionSet()
+    data = _read_toml(path)
+    unknown = set(data) - {"allow", "ask", "deny"}
+    if unknown:
+        raise PyAisyncError(f"{path}: unknown keys {sorted(unknown)}; valid: allow, ask, deny")
+    lists: dict[str, tuple[str, ...]] = {}
+    for key in ("allow", "ask", "deny"):
+        raw = data.get(key, [])
+        if not isinstance(raw, list) or not all(isinstance(r, str) for r in raw):
+            raise PyAisyncError(f"{path}: '{key}' must be a list of strings")
+        for rule in raw:
+            parse_rule(rule, f"{path} [{key}]")
+        lists[key] = tuple(dict.fromkeys(r.strip() for r in raw))
+    for a, b in (("allow", "deny"), ("allow", "ask"), ("ask", "deny")):
+        both = set(lists[a]) & set(lists[b])
+        if both:
+            raise PyAisyncError(f"{path}: rules {sorted(both)} appear in both '{a}' and '{b}'")
+    return PermissionSet(**lists)
+
+
 def load_model(root: Path) -> Model:
     config = load_config(root)
     ai = root / AI_DIR
@@ -188,5 +287,7 @@ def load_model(root: Path) -> Model:
         skills=tuple(skills),
         agents=tuple(agents),
         mcp_servers=tuple(_load_mcp(ai / "mcp.toml")),
+        hooks=tuple(_load_hooks(ai / "hooks.toml")),
+        permissions=_load_permissions(ai / "permissions.toml"),
         root=root,
     )

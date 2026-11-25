@@ -12,15 +12,18 @@ REGISTRY: dict[str, Target] = {t.name: t for t in (Claude(), Cursor(), OpenCode(
 
 def build_plan(model: Model, targets: tuple[str, ...]) -> Plan:
     outputs: dict[str, Output] = {}
-    merges: dict[str, JsonMerge] = {}
+    merges: dict[tuple[str, tuple[str, ...]], JsonMerge] = {}
+    notices: list[str] = []
     warnings: list[str] = []
     for name in targets:
         plan = REGISTRY[name].plan(model)
         warnings += plan.warnings
         for merge in plan.merges:
-            if merge.path in merges:
-                raise PyAisyncError(f"internal conflict: {merge.path} is merged by two targets")
-            merges[merge.path] = merge
+            key = (merge.path, merge.key_path)
+            if key in merges:
+                raise PyAisyncError(f"internal conflict: {merge.path} is merged twice at {key[1]}")
+            merges[key] = merge
+        notices += plan.notices
         for out in plan.outputs:
             prev = outputs.get(out.path)
             if prev is not None and prev.content != out.content:
@@ -42,7 +45,8 @@ def build_plan(model: Model, targets: tuple[str, ...]) -> Plan:
     return Plan(
         sorted(outputs.values(), key=lambda o: o.path),
         warnings,
-        sorted(merges.values(), key=lambda m: m.path),
+        sorted(merges.values(), key=lambda m: (m.path, m.key_path)),
+        notices,
     )
 
 

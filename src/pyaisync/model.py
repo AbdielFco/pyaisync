@@ -7,7 +7,7 @@ from pathlib import Path
 from .errors import PyAisyncError
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-FEATURES = ("rules", "commands", "skills", "subagents", "mcp")  # Phases 1-2
+FEATURES = ("rules", "commands", "skills", "subagents", "mcp", "hooks", "permissions")
 ALL_TARGETS = ("claude", "cursor", "opencode")
 
 
@@ -60,6 +60,25 @@ class McpServer:
 
 
 @dataclass(frozen=True)
+class Hook:
+    event: str  # canonical event name (vocab.HOOK_EVENTS)
+    command: str
+    matcher: tuple[str, ...] = ()  # canonical tools; only for tool events
+    timeout: int | None = None  # seconds
+    targets: tuple[str, ...] = ("*",)
+
+
+@dataclass(frozen=True)
+class PermissionSet:
+    allow: tuple[str, ...] = ()
+    ask: tuple[str, ...] = ()
+    deny: tuple[str, ...] = ()  # canonical rules: "tool" or "tool(pattern)"
+
+    def __bool__(self) -> bool:
+        return bool(self.allow or self.ask or self.deny)
+
+
+@dataclass(frozen=True)
 class Skill:
     name: str
     files: dict[str, bytes]  # relative posix path -> content
@@ -80,6 +99,8 @@ class Model:
     skills: tuple[Skill, ...] = ()
     agents: tuple[Agent, ...] = ()
     mcp_servers: tuple[McpServer, ...] = ()
+    hooks: tuple[Hook, ...] = ()
+    permissions: PermissionSet = PermissionSet()
     root: Path = Path(".")
 
     def for_target(self, target: str) -> Model:
@@ -93,5 +114,7 @@ class Model:
             skills=tuple(s for s in self.skills if ok(s.targets)),
             agents=tuple(a for a in self.agents if ok(a.targets)),
             mcp_servers=tuple(m for m in self.mcp_servers if ok(m.targets)),
+            hooks=tuple(h for h in self.hooks if ok(h.targets)),
+            permissions=self.permissions,
             root=self.root,
         )

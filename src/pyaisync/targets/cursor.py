@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .. import frontmatter
-from ..model import Agent, McpServer, Model, Rule
-from ..vocab import WRITE_TOOLS, translate_env
+from ..model import Agent, Hook, McpServer, Model, PermissionSet, Rule
+from ..vocab import HOOK_EVENTS, WRITE_TOOLS, cursor_matcher, parse_rule, translate_env
 from .base import HEADER, JsonMerge, Output, Plan, text
 
 _ENV = "${env:{name}}"  # Cursor interpolation syntax
@@ -57,9 +57,42 @@ def _server(s: McpServer) -> dict[str, Any]:
     return entry
 
 
+def _permission_rules(perms: PermissionSet, warnings: list[str]) -> dict[str, list[str]]:
+    """Cursor CLI permission tokens (.cursor/cli.json): only allow/deny exist."""
+    out: dict[str, list[str]] = {"allow": [], "deny": []}
+    if perms.ask:
+        warnings.append("permissions: Cursor has no 'ask' rules; they are skipped")
+    for effect in ("allow", "deny"):
+        for rule in getattr(perms, effect):
+            tool, pattern = parse_rule(rule, "permissions")
+            if tool in ("grep", "glob"):
+                warnings.append(f"permission '{rule}': Cursor has no {tool} permission; skipped")
+            elif tool == "shell":
+                base = (pattern or "*").strip()
+                head, _, rest = base.partition(" ")
+                out[effect].append(f"Shell({head}:{rest})" if rest else f"Shell({head})")
+            elif tool == "web":
+                out[effect].append(f"WebFetch({pattern or '*'})")
+            else:
+                name = {"read": "Read", "edit": "Write"}[tool]
+                out[effect].append(f"{name}({pattern or '**'})")
+    return {k: list(dict.fromkeys(v)) for k, v in out.items()}
+
+
+def _hook_item(h: Hook, matcher: str | None) -> dict[str, Any]:
+    item: dict[str, Any] = {"command": h.command}
+    if h.timeout is not None:
+        item["timeout"] = h.timeout
+    if matcher:
+        item["matcher"] = matcher
+    return item
+
+
 class Cursor:
     name = "cursor"
-    supported = frozenset({"rules", "commands", "skills", "subagents", "mcp"})
+    supported = frozenset(
+        {"rules", "commands", "skills", "subagents", "mcp", "hooks", "permissions"}
+    )
 
     def plan(self, model: Model) -> Plan:
         m = model.for_target(self.name)
@@ -86,4 +119,29 @@ class Cursor:
         if feats["mcp"] and m.mcp_servers:
             entries = {s.name: _server(s) for s in sorted(m.mcp_servers, key=lambda x: x.name)}
             merges.append(JsonMerge(".cursor/mcp.json", ("mcpServers",), entries))
-        return Plan(outs, warnings, merges)
+        notices: list[str] = []
+        if feats["hooks"] and m.hooks:
+            groups: dict[str, list[Any]] = {}
+            for h in m.hooks:
+                matcher = cursor_matcher(h.matcher) if h.matcher else None
+                if h.matcher and matcher is None:
+                    warnings.append(
+                        f"hook {h.event} {list(h.matcher)}: Cursor cannot match glob/web tools; skipped"
+                    )
+                    continue
+                native = HOOK_EVENTS[h.event][1]
+                groups.setdefault(native, []).append(_hook_item(h, matcher))
+                where = f"[{matcher}]" if matcher else ""
+                notices.append(f"cursor: {native}{where} runs: {h.command}")
+            if groups:
+                merges.append(JsonMerge(".cursor/hooks.json", (), {"version": 1}))
+                for native, items in sorted(groups.items()):
+                    merges.append(JsonMerge(".cursor/hooks.json", ("hooks", native), items))
+        if feats["permissions"] and m.permissions:
+            warnings.append(
+                "permissions: Cursor applies them to the Cursor CLI only (.cursor/cli.json)"
+            )
+            for effect, rules in _permission_rules(m.permissions, warnings).items():
+                if rules:
+                    merges.append(JsonMerge(".cursor/cli.json", ("permissions", effect), rules))
+        return Plan(outs, warnings, merges, notices)

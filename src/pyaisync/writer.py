@@ -25,6 +25,7 @@ class Report:
     deleted: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)  # messages
     warnings: list[str] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)  # hooks: commands that will run
 
     @property
     def has_changes(self) -> bool:
@@ -39,66 +40,67 @@ def _prune_empty_dirs(root: Path, path: Path) -> None:
         parent = parent.parent
 
 
-def _container(data: dict[str, Any], key_path: tuple[str, ...], rel: str, make: bool) -> Any:
+def _parent(data: dict[str, Any], key_path: tuple[str, ...], rel: str, make: bool) -> Any:
+    """Walk to the object that holds `key_path[-1]`."""
     cur: Any = data
-    for key in key_path:
+    for key in key_path[:-1]:
         nxt = cur.get(key, _MISSING)
         if nxt is _MISSING:
             if not make:
                 return _MISSING
             nxt = cur[key] = {}
         if not isinstance(nxt, dict):
-            raise PyAisyncError(f"{rel}: '{'.'.join(key_path)}' is not a JSON object")
+            raise PyAisyncError(f"{rel}: '{'.'.join(key_path)}' is not reachable (not an object)")
         cur = nxt
     return cur
 
 
 def _prune_empty_json(data: dict[str, Any], key_path: tuple[str, ...]) -> None:
+    """Remove empty containers left behind along `key_path` (never touches non-empty ones)."""
     for depth in range(len(key_path), 0, -1):
-        parent = _container(data, key_path[: depth - 1], "", make=False)
-        node = parent.get(key_path[depth - 1]) if parent is not _MISSING else None
-        if isinstance(node, dict) and not node:
-            del parent[key_path[depth - 1]]
+        parent = _parent(data, key_path[:depth], "", make=False)
+        key = key_path[depth - 1]
+        if parent is _MISSING:
+            continue
+        node = parent.get(key)
+        if isinstance(node, (dict, list)) and not node:
+            del parent[key]
         else:
             break
 
 
-def _plan_merge(
-    root: Path,
+def _dict_op(
+    work: dict[str, Any],
+    rel: str,
     merge: JsonMerge,
-    old: mf.JsonState | None,
+    old: mf.JsonOp | None,
     report: Report,
     *,
     force: bool,
     adopt: bool,
-) -> tuple[bytes | None, bool, mf.JsonState | None]:
-    """Returns (new file bytes | None, delete_file, new manifest state | None)."""
-    rel, kp = merge.path, merge.key_path
-    target = safe_join(root, rel)
-    existed = target.exists()
-    data: dict[str, Any] = {}
-    if existed:
-        try:
-            loaded = json.loads(target.read_text(encoding="utf-8"))
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise PyAisyncError(
-                f"{rel}: cannot merge into a file that is not plain JSON ({exc}); "
-                "comments are not supported"
-            ) from exc
-        if not isinstance(loaded, dict):
-            raise PyAisyncError(f"{rel}: top-level JSON value must be an object")
-        data = loaded
-    work = copy.deepcopy(data)
-    cont = _container(work, kp, rel, make=bool(merge.entries))
+) -> tuple[mf.JsonOp, bool]:
+    kp, desired = merge.key_path, merge.entries
+    assert isinstance(desired, dict)
+    if kp:
+        parent = _parent(work, kp, rel, make=bool(desired))
+        cont: Any = _MISSING
+        if parent is not _MISSING:
+            cont = parent.get(kp[-1], _MISSING)
+            if cont is _MISSING and desired:
+                cont = parent[kp[-1]] = {}
+            if cont is not _MISSING and not isinstance(cont, dict):
+                raise PyAisyncError(f"{rel}: '{'.'.join(kp)}' is not a JSON object")
+    else:
+        cont = work
     owned = dict(old.entries) if old else {}
     new_entries: dict[str, str] = {}
     changed = False
 
     def label(name: str) -> str:
-        return f"{rel}#{'.'.join(kp)}.{name}"
+        return f"{rel}#{'.'.join((*kp, name))}"
 
-    for name in sorted(merge.entries):
-        value = merge.entries[name]
+    for name in sorted(desired):
+        value = desired[name]
         want = mf.value_hash(value)
         new_entries[name] = want
         cur = cont.get(name, _MISSING) if cont is not _MISSING else _MISSING
@@ -128,7 +130,7 @@ def _plan_merge(
         changed = True
 
     for name, recorded in owned.items():
-        if name in merge.entries or cont is _MISSING or name not in cont:
+        if name in desired or cont is _MISSING or name not in cont:
             continue
         if mf.value_hash(cont[name]) == recorded or force:
             report.deleted.append(label(name))
@@ -136,18 +138,103 @@ def _plan_merge(
             changed = True
         else:
             report.warnings.append(
-                f"{label(name)}: is no longer generated but was edited by hand; it will not be deleted"
+                f"{label(name)}: is no longer generated but was edited by hand; "
+                "it will not be deleted"
             )
             new_entries[name] = recorded
+    return mf.JsonOp(kp, "dict", new_entries), changed
 
-    state = (
-        mf.JsonState(kp, created=(old.created if old else not existed), entries=new_entries)
-        if new_entries
-        else None
-    )
+
+def _item_label(rel: str, kp: tuple[str, ...], item: Any) -> str:
+    text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+    return f"{rel}#{'.'.join(kp)}: {text if len(text) <= 70 else text[:67] + '...'}"
+
+
+def _list_op(
+    work: dict[str, Any],
+    rel: str,
+    merge: JsonMerge,
+    old: mf.JsonOp | None,
+    report: Report,
+) -> tuple[mf.JsonOp, bool]:
+    kp, desired = merge.key_path, merge.entries
+    assert isinstance(desired, list) and kp
+    parent = _parent(work, kp, rel, make=bool(desired))
+    cur_list: Any = _MISSING
+    if parent is not _MISSING:
+        cur_list = parent.get(kp[-1], _MISSING)
+        if cur_list is _MISSING and desired:
+            cur_list = parent[kp[-1]] = []
+        if cur_list is not _MISSING and not isinstance(cur_list, list):
+            raise PyAisyncError(f"{rel}: '{'.'.join(kp)}' is not a JSON array")
+    owned = set(old.entries) if old else set()
+    want = {mf.value_hash(item): item for item in desired}
+    changed = False
+    if cur_list is not _MISSING:
+        present = {mf.value_hash(item) for item in cur_list}
+        for h in list(owned):
+            if h in want or h not in present:
+                continue
+            idx = next(i for i, it in enumerate(cur_list) if mf.value_hash(it) == h)
+            report.deleted.append(_item_label(rel, kp, cur_list[idx]))
+            del cur_list[idx]
+            changed = True
+        present = {mf.value_hash(item) for item in cur_list}
+        for h, item in want.items():
+            if h in present:
+                report.unchanged.append(_item_label(rel, kp, item))
+            else:
+                report.created.append(_item_label(rel, kp, item))
+                cur_list.append(copy.deepcopy(item))
+                changed = True
+    return mf.JsonOp(kp, "list", {h: h for h in want}), changed
+
+
+def _plan_json_file(
+    root: Path,
+    rel: str,
+    merges: list[JsonMerge],
+    old: mf.JsonFileState | None,
+    report: Report,
+    *,
+    force: bool,
+    adopt: bool,
+) -> tuple[bytes | None, bool, mf.JsonFileState | None]:
+    """Returns (new file bytes | None, delete_file, new manifest state | None)."""
+    target = safe_join(root, rel)
+    existed = target.exists()
+    data: dict[str, Any] = {}
+    if existed:
+        try:
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise PyAisyncError(
+                f"{rel}: cannot merge into a file that is not plain JSON ({exc}); "
+                "comments are not supported"
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise PyAisyncError(f"{rel}: top-level JSON value must be an object")
+        data = loaded
+    work = copy.deepcopy(data)
+    old_ops = old.ops if old else {}
+    wanted = {mf.op_id(m.key_path): m for m in merges}
+    for oid, prev in old_ops.items():  # ops that were merged before but no longer are
+        wanted.setdefault(oid, JsonMerge(rel, prev.key_path, [] if prev.kind == "list" else {}))
+    new_ops: dict[str, mf.JsonOp] = {}
+    changed = False
+    for oid, merge in sorted(wanted.items()):
+        if isinstance(merge.entries, list):
+            op, did = _list_op(work, rel, merge, old_ops.get(oid), report)
+        else:
+            op, did = _dict_op(work, rel, merge, old_ops.get(oid), report, force=force, adopt=adopt)
+        changed = changed or did
+        if op.entries:
+            new_ops[oid] = op
+    state = mf.JsonFileState(old.created if old else not existed, new_ops) if new_ops else None
     if not changed:
         return None, False, state
-    _prune_empty_json(work, kp)
+    for merge in wanted.values():
+        _prune_empty_json(work, merge.key_path)
     if not work and (not existed or (old is not None and old.created)):
         return None, True, state
     return (json.dumps(work, indent=2, ensure_ascii=False) + "\n").encode(), False, state
@@ -161,7 +248,7 @@ def apply(
     force: bool = False,
     adopt: bool = False,
 ) -> Report:
-    report = Report(warnings=list(plan.warnings))
+    report = Report(warnings=list(plan.warnings), notices=list(plan.notices))
     old = mf.load(root)
     desired = {o.path: o.content for o in plan.outputs}
     new_files: dict[str, str] = {}
@@ -205,14 +292,16 @@ def apply(
             new_files[rel] = recorded
 
     # Shared JSON files: also visit files that were merged before but no longer are.
-    merges = {m.path: m for m in plan.merges}
-    for rel, prev in old.json.items():
-        merges.setdefault(rel, JsonMerge(rel, prev.key_path, {}))
+    by_file: dict[str, list[JsonMerge]] = {}
+    for merge in plan.merges:
+        by_file.setdefault(merge.path, []).append(merge)
+    for rel in old.json:
+        by_file.setdefault(rel, [])
     json_writes: list[tuple[str, bytes | None, bool]] = []
-    new_json: dict[str, mf.JsonState] = {}
-    for rel, merge in sorted(merges.items()):
-        content, delete, state = _plan_merge(
-            root, merge, old.json.get(rel), report, force=force, adopt=adopt
+    new_json: dict[str, mf.JsonFileState] = {}
+    for rel, file_merges in sorted(by_file.items()):
+        content, delete, state = _plan_json_file(
+            root, rel, file_merges, old.json.get(rel), report, force=force, adopt=adopt
         )
         if content is not None or delete:
             json_writes.append((rel, content, delete))
