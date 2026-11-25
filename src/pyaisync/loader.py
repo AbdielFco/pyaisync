@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any
 
 from . import frontmatter
 from .config import AI_DIR, load_config
 from .errors import PyAisyncError
-from .model import ALL_TARGETS, Command, Model, Rule, Skill, validate_name
+from .model import ALL_TARGETS, Agent, Command, McpServer, Model, Rule, Skill, validate_name
 from .safefs import read_text, read_tree
+from .vocab import TOOLS, check_secret
 
 
 def _targets(meta: dict[str, Any], src: Path) -> tuple[str, ...]:
@@ -35,6 +37,72 @@ def _md_files(directory: Path) -> list[Path]:
     return sorted(
         p for p in directory.iterdir() if p.suffix == ".md" and not p.name.startswith(".")
     )
+
+
+_MCP_TYPES = {"stdio": "stdio", "http": "http", "remote": "http", "sse": "sse"}
+
+
+def _str_map(raw: Any, where: str, field: str) -> tuple[tuple[str, str], ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in raw.items()
+    ):
+        raise PyAisyncError(f"{where}: '{field}' must be a table of strings")
+    for key, value in raw.items():
+        check_secret(where, key, value)
+    return tuple(sorted(raw.items()))
+
+
+def _load_mcp(path: Path) -> list[McpServer]:
+    if not path.is_file():
+        return []
+    try:
+        data = tomllib.loads(read_text(path))
+    except tomllib.TOMLDecodeError as exc:
+        raise PyAisyncError(f"{path}: invalid TOML: {exc}") from exc
+    servers = data.get("servers", {})
+    if not isinstance(servers, dict):
+        raise PyAisyncError(f"{path}: 'servers' must be a table")
+    out: list[McpServer] = []
+    for name, cfg in sorted(servers.items()):
+        where = f"{path} [servers.{name}]"
+        validate_name(name, f"{path}: server")
+        if not isinstance(cfg, dict):
+            raise PyAisyncError(f"{where}: must be a table")
+        kind = _MCP_TYPES.get(str(cfg.get("type", "")))
+        if kind is None:
+            raise PyAisyncError(f"{where}: 'type' must be one of {sorted(_MCP_TYPES)}")
+        args = cfg.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise PyAisyncError(f"{where}: 'args' must be a list of strings")
+        command = cfg.get("command", "")
+        url = cfg.get("url", "")
+        if not isinstance(command, str) or not isinstance(url, str):
+            raise PyAisyncError(f"{where}: 'command' and 'url' must be strings")
+        if kind == "stdio":
+            if not command:
+                raise PyAisyncError(f"{where}: stdio servers need 'command'")
+            if url:
+                raise PyAisyncError(f"{where}: stdio servers cannot have 'url'")
+        else:
+            if not url.startswith(("http://", "https://")):
+                raise PyAisyncError(f"{where}: remote servers need an http(s) 'url'")
+            if command or args:
+                raise PyAisyncError(f"{where}: remote servers cannot have 'command'/'args'")
+        out.append(
+            McpServer(
+                name=name,
+                type=kind,
+                command=command,
+                args=tuple(args),
+                env=_str_map(cfg.get("env"), where, "env"),
+                url=url,
+                headers=_str_map(cfg.get("headers"), where, "headers"),
+                targets=_targets(cfg, Path(where)),
+            )
+        )
+    return out
 
 
 def load_model(root: Path) -> Model:
@@ -75,6 +143,30 @@ def load_model(root: Path) -> Model:
             )
         )
 
+    agents: list[Agent] = []
+    for p in _md_files(ai / "agents"):
+        meta, body = frontmatter.parse(read_text(p), str(p))
+        tools = meta.get("tools")
+        if tools is not None:
+            if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                raise PyAisyncError(f"{p}: 'tools' must be a list of strings")
+            bad = [t for t in tools if t not in TOOLS]
+            if bad:
+                raise PyAisyncError(f"{p}: unknown tools {bad}; valid: {list(TOOLS)}")
+        model_name = meta.get("model", "inherit")
+        if not isinstance(model_name, str) or not model_name:
+            raise PyAisyncError(f"{p}: 'model' must be a non-empty string")
+        agents.append(
+            Agent(
+                name=validate_name(p.stem, f"{p}: agent"),
+                body=body.strip("\n"),
+                description=_str(meta, "description", p),
+                tools=None if tools is None else tuple(dict.fromkeys(tools)),
+                model=model_name,
+                targets=_targets(meta, p),
+            )
+        )
+
     skills: list[Skill] = []
     sdir = ai / "skills"
     if sdir.is_dir():
@@ -94,5 +186,7 @@ def load_model(root: Path) -> Model:
         rules=tuple(rules),
         commands=tuple(commands),
         skills=tuple(skills),
+        agents=tuple(agents),
+        mcp_servers=tuple(_load_mcp(ai / "mcp.toml")),
         root=root,
     )

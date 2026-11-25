@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from ..model import Command, Model, Rule
 
@@ -16,9 +16,23 @@ class Output:
 
 
 @dataclass(frozen=True)
+class JsonMerge:
+    """Entries pyaisync owns inside a (possibly user-edited) JSON file.
+
+    `entries` are written under `key_path` (e.g. ("mcpServers",)); everything else in the file
+    is left untouched.
+    """
+
+    path: str
+    key_path: tuple[str, ...]
+    entries: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Plan:
     outputs: list[Output]
     warnings: list[str]
+    merges: list[JsonMerge] = field(default_factory=list)
 
 
 class Target(Protocol):

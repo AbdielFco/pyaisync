@@ -156,6 +156,21 @@ def _discover(root: Path, target: str, rep: ImportReport) -> list[_Item]:
     raise PyAisyncError(f"unknown target: {target}")
 
 
+_NOT_IMPORTED = {
+    "claude": (".mcp.json", ".claude/agents"),
+    "cursor": (".cursor/mcp.json", ".cursor/agents"),
+    "opencode": ("opencode.json", "opencode.jsonc", ".opencode/agents"),
+}
+
+
+def _note_not_imported(root: Path, target: str, rep: ImportReport) -> None:
+    for rel in _NOT_IMPORTED[target]:
+        if (root / rel).exists():
+            rep.warnings.append(
+                f"{rel}: subagents/MCP import is not implemented yet (phase 4); skipped"
+            )
+
+
 def _rename(item: _Item, new: str) -> _Item:
     files = {}
     for rel, data in item.files.items():
@@ -177,6 +192,7 @@ def import_target(
         raise PyAisyncError(".ai/config.toml not found: run 'pyaisync init' first")
     rep = ImportReport()
     items = _discover(root, target, rep)
+    _note_not_imported(root, target, rep)
     seen: set[tuple[str, str]] = set()
     for item in items:
         key = (item.kind, item.name)

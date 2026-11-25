@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ..errors import PyAisyncError
 from ..model import Model
-from .base import Output, Plan, Target
+from .base import JsonMerge, Output, Plan, Target
 from .claude import Claude
 from .cursor import Cursor
 from .opencode import OpenCode
@@ -12,10 +12,15 @@ REGISTRY: dict[str, Target] = {t.name: t for t in (Claude(), Cursor(), OpenCode(
 
 def build_plan(model: Model, targets: tuple[str, ...]) -> Plan:
     outputs: dict[str, Output] = {}
+    merges: dict[str, JsonMerge] = {}
     warnings: list[str] = []
     for name in targets:
         plan = REGISTRY[name].plan(model)
         warnings += plan.warnings
+        for merge in plan.merges:
+            if merge.path in merges:
+                raise PyAisyncError(f"internal conflict: {merge.path} is merged by two targets")
+            merges[merge.path] = merge
         for out in plan.outputs:
             prev = outputs.get(out.path)
             if prev is not None and prev.content != out.content:
@@ -34,7 +39,11 @@ def build_plan(model: Model, targets: tuple[str, ...]) -> Plan:
             for rel, data in sorted(skill.files.items()):
                 path = f"{base}/{skill.name}/{rel}"
                 outputs[path] = Output(path, data)
-    return Plan(sorted(outputs.values(), key=lambda o: o.path), warnings)
+    return Plan(
+        sorted(outputs.values(), key=lambda o: o.path),
+        warnings,
+        sorted(merges.values(), key=lambda m: m.path),
+    )
 
 
 __all__ = ["REGISTRY", "Output", "Plan", "Target", "build_plan"]

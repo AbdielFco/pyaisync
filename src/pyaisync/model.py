@@ -7,7 +7,7 @@ from pathlib import Path
 from .errors import PyAisyncError
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-FEATURES = ("rules", "commands", "skills")  # Phase 1
+FEATURES = ("rules", "commands", "skills", "subagents", "mcp")  # Phases 1-2
 ALL_TARGETS = ("claude", "cursor", "opencode")
 
 
@@ -38,6 +38,28 @@ class Command:
 
 
 @dataclass(frozen=True)
+class Agent:
+    name: str
+    body: str
+    description: str = ""
+    tools: tuple[str, ...] | None = None  # None = inherit everything
+    model: str = "inherit"
+    targets: tuple[str, ...] = ("*",)
+
+
+@dataclass(frozen=True)
+class McpServer:
+    name: str
+    type: str  # "stdio" | "http" | "sse"
+    command: str = ""
+    args: tuple[str, ...] = ()
+    env: tuple[tuple[str, str], ...] = ()
+    url: str = ""
+    headers: tuple[tuple[str, str], ...] = ()
+    targets: tuple[str, ...] = ("*",)
+
+
+@dataclass(frozen=True)
 class Skill:
     name: str
     files: dict[str, bytes]  # relative posix path -> content
@@ -56,6 +78,8 @@ class Model:
     rules: tuple[Rule, ...] = ()
     commands: tuple[Command, ...] = ()
     skills: tuple[Skill, ...] = ()
+    agents: tuple[Agent, ...] = ()
+    mcp_servers: tuple[McpServer, ...] = ()
     root: Path = Path(".")
 
     def for_target(self, target: str) -> Model:
@@ -67,5 +91,7 @@ class Model:
             rules=tuple(r for r in self.rules if ok(r.targets)),
             commands=tuple(c for c in self.commands if ok(c.targets)),
             skills=tuple(s for s in self.skills if ok(s.targets)),
+            agents=tuple(a for a in self.agents if ok(a.targets)),
+            mcp_servers=tuple(m for m in self.mcp_servers if ok(m.targets)),
             root=self.root,
         )

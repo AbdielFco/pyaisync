@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from . import __version__
@@ -22,6 +23,20 @@ _TEMPLATES = {
         "---\n"
         "# Example: edit or delete this file\n"
         "- Describe your conventions and the test/lint commands for this project here.\n"
+    ),
+    "mcp.toml": (
+        "# MCP servers. Use ${VAR} for secrets; never write literal keys here.\n"
+        "#\n"
+        "# [servers.docs]\n"
+        '# type = "http"          # stdio | http | sse\n'
+        '# url = "https://example.com/mcp"\n'
+        '# headers = { Authorization = "Bearer ${DOCS_TOKEN}" }\n'
+        "#\n"
+        "# [servers.local-tool]\n"
+        '# type = "stdio"\n'
+        '# command = "uvx"\n'
+        '# args = ["my-mcp-server"]\n'
+        '# env = { API_KEY = "${MY_API_KEY}" }\n'
     ),
     "commands/example.md": (
         "---\ndescription: Example command\n---\nSummarize the uncommitted changes. $ARGUMENTS\n"
@@ -120,16 +135,8 @@ def cmd_generate(args: argparse.Namespace, root: Path, *, check: bool = False) -
     targets = _csv(args.targets, ALL_TARGETS, "targets") or model.config.targets
     only = _csv(getattr(args, "features", None), FEATURES, "features")
     if only is not None:
-        model = type(model)(
-            config=type(model.config)(
-                targets=model.config.targets,
-                features={f: (f in only) and model.config.features[f] for f in FEATURES},
-            ),
-            rules=model.rules,
-            commands=model.commands,
-            skills=model.skills,
-            root=model.root,
-        )
+        feats = {f: (f in only) and model.config.features[f] for f in FEATURES}
+        model = replace(model, config=replace(model.config, features=feats))
     plan = build_plan(model, targets)
     write = not (check or args.dry_run)
     rep = apply(root, plan, write=write, force=args.force, adopt=args.adopt)
@@ -155,7 +162,7 @@ def cmd_list(args: argparse.Namespace, root: Path) -> int:
             f"{name:10} "
             + "  ".join(f"{('yes' if f in tgt.supported else 'no'):9}" for f in FEATURES)
         )
-    print("\nNot implemented yet (phases 2-4): subagents, mcp, hooks, permissions, plugins.")
+    print("\nNot implemented yet (phases 3-4): hooks, permissions, plugins.")
     return 0
 
 
