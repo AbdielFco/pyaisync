@@ -50,15 +50,15 @@ class Manifest:
     json: dict[str, JsonFileState] = field(default_factory=dict)
 
 
-def load(root: Path) -> Manifest:
-    path = root / MANIFEST
+def load(root: Path, rel: str = MANIFEST) -> Manifest:
+    path = root / rel
     if not path.is_file():
         return Manifest()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         files = {str(k): str(v) for k, v in data["files"].items()}
         shared: dict[str, JsonFileState] = {}
-        for rel, st in data.get("json", {}).items():
+        for json_rel, st in data.get("json", {}).items():
             ops = {
                 str(oid): JsonOp(
                     key_path=tuple(str(k) for k in op["key_path"]),
@@ -67,7 +67,7 @@ def load(root: Path) -> Manifest:
                 )
                 for oid, op in st["ops"].items()
             }
-            shared[str(rel)] = JsonFileState(created=bool(st.get("created", False)), ops=ops)
+            shared[str(json_rel)] = JsonFileState(created=bool(st.get("created", False)), ops=ops)
         return Manifest(files, shared)
     except (ValueError, KeyError, AttributeError, TypeError) as exc:
         raise PyAisyncError(f"{path}: corrupt manifest: {exc}") from exc

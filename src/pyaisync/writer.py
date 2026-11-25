@@ -247,9 +247,10 @@ def apply(
     write: bool,
     force: bool = False,
     adopt: bool = False,
+    manifest_rel: str = mf.MANIFEST,
 ) -> Report:
     report = Report(warnings=list(plan.warnings), notices=list(plan.notices))
-    old = mf.load(root)
+    old = mf.load(root, manifest_rel)
     desired = {o.path: o.content for o in plan.outputs}
     new_files: dict[str, str] = {}
 
@@ -328,5 +329,5 @@ def apply(
         elif content is not None:
             atomic_write(p, content)
     if new_files or new_json or old.files or old.json:
-        atomic_write(root / mf.MANIFEST, mf.dumps(mf.Manifest(new_files, new_json)))
+        atomic_write(root / manifest_rel, mf.dumps(mf.Manifest(new_files, new_json)))
     return report

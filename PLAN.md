@@ -1,7 +1,7 @@
 # pyaisync — Implementation plan
 
-> Status: **Phases 0-3 implemented** (rules, commands, skills, subagents, mcp, hooks, permissions; init/generate/check/list/import).
-> Phase 4 (full import + plugins) pending. Verified formats live in `docs/formats/README.md`.
+> Status: **All phases (0-4) implemented**: rules, commands, skills, subagents, mcp, hooks, permissions;
+> `init` / `generate` / `check` / `list` / `import` (all features) / `plugin claude`. Verified formats live in `docs/formats/README.md`.
 > Date: 2026-11-25
 
 ## 1. Goal
@@ -61,7 +61,7 @@ Verification status: ✅ confirmed in official docs · ⚠️ known format, not 
 | mcp | `.mcp.json` (`mcpServers`) ✅ | `.cursor/mcp.json` (`mcpServers`) ✅ | `mcp.servers` in `opencode.json` ✅ (V2; Streamable HTTP only) |
 | hooks | `.claude/settings.json` (`hooks`) ✅ | `.cursor/hooks.json` ✅ | none declarative (JS/TS plugins) — skipped with a warning ✅ |
 | permissions | `.claude/settings.json` (`permissions`) ✅ | `.cursor/cli.json` (Cursor **CLI** only; no `ask`) ✅ | top-level `permissions` list in `opencode.json` (V2) ✅ |
-| plugins | `.claude-plugin/plugin.json` ✅ | ❓ | ❓ |
+| plugins | `.claude-plugin/plugin.json` + components at the plugin root ✅ (packaged by `pyaisync plugin claude`) | not packaged (no equivalent in scope) | not packaged |
 
 Note: the OpenCode docs differ between V1 and V2 (e.g. flat `mcp` vs `mcp.servers`).
 Decision: **V2 only** (see §13).
@@ -275,6 +275,9 @@ pyaisync generate             # generate native files
    --force / --adopt        # see §4.1
 pyaisync check                # fails (non-zero) on drift; for CI / pre-commit
 pyaisync list                 # what each target supports (the real matrix)
+pyaisync plugin claude        # package .ai/ as a Claude Code plugin directory (see §9.3)
+   --out DIR                # relative to --root; default dist/<plugin.name>
+   --dry-run / --force / --adopt
 pyaisync import <target>      # bring native config into .ai/ (see §9.2). Basic in Phase 1
    --dry-run                # show what would be imported and what would not
    --on-conflict skip|rename|overwrite   # default: skip (with a warning)
@@ -322,7 +325,9 @@ It is what lets you adopt `pyaisync` in a repo that already has configuration wi
 | Claude Code | `CLAUDE.md`, `.claude/commands/*.md`, `.claude/skills/*` | rules, commands, skills |
 | Cursor | `.cursor/rules/*.mdc` (`description`, `globs`, `alwaysApply`), `.cursor/commands/*.md`, `.cursor/skills/*`, `.agents/skills/*` | rules (`always`/`globs`/`description`), commands, skills |
 | OpenCode | `AGENTS.md`, `.opencode/commands/*.md` (and legacy `command/`), `.opencode/skills/*`, `.agents/skills/*` | rules, commands, skills |
-| (Phases 2-3) | agents, `.mcp.json` / `mcp` key, hooks, permissions | agents, `mcp.toml`, `hooks.toml`, `permissions.toml` |
+| Claude Code | + `.claude/agents`, `.mcp.json`, `.claude/settings.json` (`hooks`, `permissions`) | agents, `mcp.toml`, `hooks.toml`, `permissions.toml` |
+| Cursor | + `.cursor/agents`, `.cursor/mcp.json`, `.cursor/hooks.json`, `.cursor/cli.json` | same |
+| OpenCode | + `.opencode/agents`, `opencode.json` (`mcp.servers`, `permissions`) | same |
 
 **How it converts**
 1. Discovers the target's files (without following symlinks) and parses them (YAML frontmatter, JSON/JSONC).
@@ -349,8 +354,26 @@ Quality bar: `import` followed by `generate` must reproduce the original configu
 
 **Known limits**
 - It does not import user-level global configuration (`~/.claude`, etc.).
-- Hooks/permissions with constructs that have no canonical equivalent are listed as "not imported" (Phases 3-4).
+- Hooks/permissions/agents with constructs that have no canonical equivalent are reported as skipped; anything that could widen access (an allow rule, a tool allowlist) is skipped rather than approximated. See `docs/formats` ("Import mapping").
 - There is no continuous sync: `import` is a one-off migration, not a way of working.
+
+### 9.3 `pyaisync plugin claude`
+
+Builds a Claude Code plugin directory from `.ai/` (requires a `[plugin]` table in `config.toml`:
+`name` (kebab-case, not reserved), and optionally `version`, `description`, `author`, `license`).
+
+```
+dist/<name>/
+  .claude-plugin/plugin.json
+  commands/  agents/  skills/<n>/
+  hooks/hooks.json            # {"hooks": {...}}
+  .mcp.json                   # {"mcpServers": {...}}
+  .pyaisync-plugin.json       # ownership manifest (same hash rules as .ai/.manifest.json)
+```
+- Same non-destructive rules as `generate`: it only touches files it created, refuses hand-edited or foreign files
+  (`--force` / `--adopt`), removes components that disappeared from `.ai/`, and never writes over the repository itself.
+- Not packageable, and reported as such: project **rules** (a `CLAUDE.md` in a plugin is not loaded) and **permissions**.
+- Hook commands are copied verbatim and scripts are **not** bundled; the command warns about it.
 
 ## 10. Package layout and use with uv
 
@@ -368,10 +391,12 @@ pyaisync/
     safefs.py             # safe paths, no symlinks, atomic writes
     writer.py             # plan → disk, manifest, conflicts
     manifest.py
-    importers/            # inverse of targets/
+    importers/            # inverse of targets/ (common.py, structured.py: agents/mcp/hooks/permissions)
+    plugin.py             # Claude Code plugin packaging
     targets/{__init__,base,claude,cursor,opencode}.py
   tests/
-    test_generate.py  test_init_import.py  test_security.py
+    test_generate.py  test_init_import.py  test_security.py  test_phase2.py  test_phase3.py
+    test_import_structured.py  test_plugin.py
   docs/formats/README.md  # verified native formats
   PLAN.md
   README.md
@@ -398,8 +423,7 @@ Dev tools: `pytest`, `ruff`, `mypy` (dev-dependencies only). The CLI uses `argpa
 
 ## 12. Phases and acceptance criteria
 
-**Progress (2026-11-25):** Phase 0 ✅ (all features verified) · Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅
-(76 tests, ruff and strict mypy green).
+**Progress (2026-11-25):** Phases 0-4 ✅ (96 tests, ruff and strict mypy green).
 **Documented deviation:** skills are written to one shared path (`.claude/skills/` or
 `.agents/skills/`) instead of one per target, because all 3 targets read those paths (see `docs/formats`).
 
@@ -423,7 +447,7 @@ Each phase leaves the package usable. Between phases a short security review (th
 4. **OpenCode version to support:** **V2 only** (decided in Phase 2). The V1 schema is not generated.
 5. **Minimum Python:** 3.11 (because of `tomllib`).
 6. **License:** MIT.
-7. **Scope:** Phases 1-3 done; Phase 4 (full import + plugins) is next.
+7. **Scope:** all phases done. Future work (not planned): more targets, Cursor/OpenCode plugin packaging, JSONC merge.
 
 ## 14. Risks
 

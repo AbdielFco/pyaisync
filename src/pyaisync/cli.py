@@ -11,6 +11,7 @@ from .errors import PyAisyncError
 from .importers import import_target
 from .loader import load_model
 from .model import ALL_TARGETS, FEATURES
+from .plugin import PLUGIN_MANIFEST, build_claude_plugin
 from .safefs import atomic_write
 from .targets import REGISTRY, build_plan
 from .writer import Report, apply
@@ -178,6 +179,27 @@ def cmd_generate(args: argparse.Namespace, root: Path, *, check: bool = False) -
     return 0
 
 
+def cmd_plugin(args: argparse.Namespace, root: Path) -> int:
+    model = load_model(root)
+    plan = build_claude_plugin(model)
+    meta = model.config.plugin
+    assert meta is not None
+    out = Path(args.out) if args.out else Path("dist") / meta.name
+    out = (out if out.is_absolute() else root / out).resolve()  # relative to --root
+    if out == root or root.is_relative_to(out):
+        raise PyAisyncError(f"refusing to write the plugin over the repository itself: {out}")
+    write = not args.dry_run
+    rep = apply(
+        out, plan, write=write, force=args.force, adopt=args.adopt, manifest_rel=PLUGIN_MANIFEST
+    )
+    print(f"Plugin '{meta.name}' -> {out}")
+    _print_report(rep, write=write)
+    if rep.conflicts:
+        print("Nothing was written because of the conflicts above.", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_list(args: argparse.Namespace, root: Path) -> int:
     print("target     " + "  ".join(f"{f:9}" for f in FEATURES))
     for name, tgt in REGISTRY.items():
@@ -185,7 +207,7 @@ def cmd_list(args: argparse.Namespace, root: Path) -> int:
             f"{name:10} "
             + "  ".join(f"{('yes' if f in tgt.supported else 'no'):9}" for f in FEATURES)
         )
-    print("\nNot implemented yet (phase 4): plugins.")
+    print("\nPlugins: `pyaisync plugin claude` packages .ai/ as a Claude Code plugin.")
     return 0
 
 
@@ -228,6 +250,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--on-conflict", default="skip", choices=("skip", "rename", "overwrite"))
     s.set_defaults(fn=cmd_import)
+
+    s = sub.add_parser("plugin", help="package .ai/ as a Claude Code plugin directory")
+    s.add_argument("target", choices=("claude",))
+    s.add_argument(
+        "--out", help="output directory, relative to --root (default: dist/<plugin name>)"
+    )
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--force", action="store_true", help="overwrite managed files edited by hand")
+    s.add_argument("--adopt", action="store_true", help="take over existing unmanaged files")
+    s.set_defaults(fn=cmd_plugin)
 
     s = sub.add_parser("list", help="support matrix per target")
     s.set_defaults(fn=cmd_list)

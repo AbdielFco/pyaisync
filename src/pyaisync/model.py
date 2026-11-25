@@ -86,8 +86,18 @@ class Skill:
 
 
 @dataclass(frozen=True)
+class PluginMeta:
+    name: str
+    version: str = "0.1.0"
+    description: str = ""
+    author: str = ""
+    license: str = ""
+
+
+@dataclass(frozen=True)
 class Config:
     targets: tuple[str, ...] = ALL_TARGETS
+    plugin: PluginMeta | None = None
     features: dict[str, bool] = field(default_factory=lambda: {f: True for f in FEATURES})
 
 

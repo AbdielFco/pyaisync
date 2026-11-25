@@ -99,6 +99,33 @@ Env references in `.ai/mcp.toml` are written as `${VAR}` and translated per targ
   an unmatched action asks. `pyaisync` emits allow, then ask, then deny, so deny always wins.
 - Hooks: OpenCode has no declarative hooks (it uses JS/TS plugins). `pyaisync` skips them with a warning.
 
+## Phase 4 — Claude Code plugin (verified 2026-11-25)
+Source: https://code.claude.com/docs/en/plugins-reference
+- Manifest: `.claude-plugin/plugin.json`; only `name` is required (kebab-case; names starting with `claude-`,
+  `anthropic-`, `anthropics-` or `cc-plugin-`, and a few exact names, are reserved). `version`, `description`,
+  `author` (`{name}`), `license` are written when set in `[plugin]`.
+- Everything else lives at the plugin root, **not** inside `.claude-plugin/`: `commands/`, `agents/`, `skills/<n>/SKILL.md`,
+  `hooks/hooks.json` (event map wrapped in a top-level `"hooks"` key) and `.mcp.json` (`mcpServers`).
+- A `CLAUDE.md` at the plugin root is **not loaded**, so project rules cannot be packaged; permissions live in settings and
+  are not part of a plugin either. Plugin subagents ignore `hooks`, `mcpServers` and `permissionMode` frontmatter.
+- Hook commands run from the user's project, not from the plugin: bundled scripts must be referenced with
+  `${CLAUDE_PLUGIN_ROOT}`. `pyaisync` copies commands verbatim and warns that scripts are not bundled.
+
+## Import mapping (reverse of generation)
+Import is read-only on native files and never widens access:
+- **Agents.** Claude `tools` -> canonical tools (names without an equivalent are reported; an allowlist that maps to nothing, or
+  `disallowedTools`, skips the agent). Cursor `readonly: true` -> `tools: [read, grep, glob, web]`. OpenCode agents are
+  imported only when they are `mode: subagent` and their `permissions` are exactly a `deny *` + `allow` list.
+- **MCP.** `${VAR}`, `${env:VAR}` and `{env:VAR}` -> `${VAR}`. A literal secret in `env`/`headers` is **replaced by a `${VAR}`
+  reference** (a warning names the variable to set); a literal token in `command`/`args`/`url` skips the server.
+  WebSocket servers and OpenCode V1 configs are reported and skipped.
+- **Hooks.** Only `command` hooks with a matcher made of known tools are imported; regex matchers, `http`/`prompt`/`agent`
+  hooks, events without a canonical name, and matchers on non-tool events are reported and skipped.
+- **Permissions.** Rules that cannot be mapped *exactly* are skipped when they would widen access: a bare `WebFetch` allow
+  (it would also allow WebSearch), a Cursor `Shell(git)` allow is kept exact while a deny becomes `shell(git*)`. OpenCode
+  rule lists that are not ordered allow -> ask -> deny are skipped (their meaning depends on order).
+- Entries pyaisync itself generated (recorded in `.ai/.manifest.json`) are never re-imported.
+
 ## Canonical hook events (source `.ai/hooks.toml`)
 
 | canonical | Claude Code | Cursor |

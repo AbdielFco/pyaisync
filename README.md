@@ -3,8 +3,8 @@
 One source (`.ai/`) for the AI coding agent configuration of a repository.
 `pyaisync` transpiles it into the native files of **Claude Code**, **Cursor** and **OpenCode**.
 
-Status: **Phase 3** (rules, commands, skills, subagents, MCP, hooks, permissions + `init`, `generate`, `check`, `list`, `import`).
-Full `import` and plugin packaging are planned (Phase 4).
+Status: **complete (phases 0-4)**: rules, commands, skills, subagents, MCP, hooks, permissions, with
+`init`, `generate`, `check`, `list`, `import` (every feature) and `plugin claude`.
 See [PLAN.md](PLAN.md) for the full design and the upcoming phases.
 
 ## Usage (uv)
@@ -16,7 +16,8 @@ uv run pyaisync generate --dry-run    # preview what would change
 uv run pyaisync generate              # write the native files
 uv run pyaisync check                 # CI / pre-commit: fails on drift
 uv run pyaisync list                  # support matrix
-uv run pyaisync import cursor         # bring .cursor/rules and commands into .ai/
+uv run pyaisync import cursor         # bring Cursor's native config into .ai/
+uv run pyaisync plugin claude         # package .ai/ as a Claude Code plugin (dist/<name>)
 ```
 
 From another project: `uvx --from /path/to/pyaisync pyaisync check`.
@@ -76,6 +77,28 @@ deny  = ["read(.env*)", "shell(rm -rf*)"]
 `generate` and `check` print every hook command that will run. Rules or hooks a target cannot express
 (Cursor has no `ask`; OpenCode has no declarative hooks) are skipped **with a warning**, never approximated.
 Your own entries in `.claude/settings.json`, `.cursor/hooks.json`, etc. are preserved.
+
+## Import
+
+`import <claude|cursor|opencode>` reads the native files and writes only to `.ai/`: rules, commands, skills,
+**subagents, MCP servers, hooks and permissions**. It reports everything it cannot map, never widens access
+(an allow rule or tool allowlist that cannot be mapped exactly is skipped) and **never copies a literal secret**:
+sensitive values become `${VAR}` references and the warning tells you which variable to set. Entries pyaisync generated
+itself are not re-imported. Conflicts: `--on-conflict skip|rename|overwrite`.
+
+## Claude Code plugin
+
+```toml
+# .ai/config.toml
+[plugin]
+name = "my-tools"          # kebab-case; names starting with claude-/anthropic- are reserved
+version = "1.0.0"
+description = "Team tools"
+```
+
+`pyaisync plugin claude` writes `dist/my-tools/` (`.claude-plugin/plugin.json`, `commands/`, `agents/`, `skills/`,
+`hooks/hooks.json`, `.mcp.json`). Rules and permissions cannot be part of a plugin and hook scripts are not bundled;
+both are reported. Same non-destructive rules as `generate`.
 
 ## Safety
 

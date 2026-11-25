@@ -215,12 +215,3 @@ def test_features_filter_excludes_mcp(full: Path) -> None:
     assert run(full, "generate", "--features", "rules,subagents") == 0
     assert (full / ".claude/agents/reviewer.md").is_file()
     assert not (full / ".mcp.json").exists()
-
-
-def test_import_warns_about_unimported_mcp_and_agents(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
-    write(tmp_path, ".ai/config.toml", 'version = 1\ntargets = ["claude"]\n')
-    write(tmp_path, ".mcp.json", "{}")
-    write(tmp_path, ".claude/agents/a.md", "---\nname: a\n---\nx\n")
-    assert run(tmp_path, "import", "claude") == 0
-    err = capsys.readouterr().err
-    assert ".mcp.json" in err and ".claude/agents" in err and "not implemented yet" in err
