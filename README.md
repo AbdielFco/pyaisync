@@ -5,53 +5,50 @@ One source (`.ai/`) for the AI coding agent configuration of a repository.
 
 ## Installation
 
-**Requirements:** Python 3.11 or newer. [`uv`](https://docs.astral.sh/uv/) is recommended but optional.
-`pyaisync` is not on PyPI yet, so install it from GitHub. Its only runtime dependency is `PyYAML`.
+**Requirements:** Python 3.11 or newer and [`uv`](https://docs.astral.sh/uv/). `pyaisync` is not on PyPI yet, so it is
+installed from GitHub. Its only runtime dependency is `PyYAML`.
 
-**1. Run it without installing** (nothing is added to your system):
+### Add it to your project (recommended)
 
-```bash
-uvx --from git+https://github.com/AbdielFco/pyaisync pyaisync --help
-```
-
-**2. Install it as a command** (`pyaisync` on your `PATH`):
+Like `npm i -D`, install it as a **development dependency** of the repository whose AI configuration you want to manage:
 
 ```bash
-uv tool install git+https://github.com/AbdielFco/pyaisync
-pyaisync --version
+uv add --dev git+https://github.com/AbdielFco/pyaisync
+uv run pyaisync --version
 ```
 
-**3. With pip** (inside a virtual environment):
+This records it in your `pyproject.toml` (`dependency-groups.dev` plus a `tool.uv.sources` entry) and **pins the exact
+commit in `uv.lock`**, so everyone on the team and your CI get the same version after `uv sync`. Commit both files.
+To pin a release instead of the latest commit, add a tag or commit: `uv add --dev git+https://github.com/AbdielFco/pyaisync --rev <tag-or-commit>`.
+To update: `uv lock --upgrade-package pyaisync && uv sync`.
 
-```bash
-pip install git+https://github.com/AbdielFco/pyaisync.git
-```
+Then use it as `uv run pyaisync ...` (see the quick start below).
 
-**4. From a clone** (to hack on it):
+<details>
+<summary>Other ways to install</summary>
 
-```bash
-git clone https://github.com/AbdielFco/pyaisync.git
-cd pyaisync
-uv sync                      # installs the project and the dev tools
-uv run pyaisync --help
-```
+- **Without installing anything:** `uvx --from git+https://github.com/AbdielFco/pyaisync pyaisync --help`
+- **As a global command:** `uv tool install git+https://github.com/AbdielFco/pyaisync` (then run `pyaisync ...` directly;
+  update with `uv tool upgrade pyaisync`, remove with `uv tool uninstall pyaisync`).
+- **With pip / a requirements file:** `pip install git+https://github.com/AbdielFco/pyaisync.git`, or add
+  `pyaisync @ git+https://github.com/AbdielFco/pyaisync.git` to `requirements-dev.txt`.
+- **From a clone (to work on pyaisync itself):** `git clone https://github.com/AbdielFco/pyaisync.git && cd pyaisync && uv sync`.
 
-Tips:
-- **Pin a version.** Append a tag or commit to the URL, e.g. `git+https://github.com/AbdielFco/pyaisync@<commit>`, so
-  nobody gets a different version than you reviewed.
-- **Update:** `uv tool upgrade pyaisync` (or reinstall with `--reinstall`). **Uninstall:** `uv tool uninstall pyaisync`.
-- In a Python project, add it as a dev tool instead of a global one: `uv add --dev git+https://github.com/AbdielFco/pyaisync`.
+</details>
 
 ### Quick start
 
 ```bash
 cd your-repo
-pyaisync init                 # create .ai/ (use `init --from claude` to import an existing setup)
+uv run pyaisync init                 # create .ai/ (use `init --from claude` to import an existing setup)
 # edit .ai/rules/*.md, .ai/commands/*.md, ...
-pyaisync generate --dry-run   # preview
-pyaisync generate             # write CLAUDE.md, .cursor/, AGENTS.md, ...
-pyaisync check                # in CI: fails if generated files drifted from .ai/
+uv run pyaisync generate --dry-run   # preview
+uv run pyaisync generate             # write CLAUDE.md, .cursor/, AGENTS.md, ...
+uv run pyaisync check                # in CI: fails if generated files drifted from .ai/
 ```
+
+Commit `.ai/` together with the generated files. Run `uv run pyaisync check` in CI or as a pre-commit hook so the
+generated files cannot drift from the source.
 
 Status: **complete (phases 0-4)**: rules, commands, skills, subagents, MCP, hooks, permissions, with
 `init`, `generate`, `check`, `list`, `import` (every feature) and `plugin claude`.
@@ -109,8 +106,8 @@ commit both; `check` in CI or a pre-commit hook fails when the generated files d
 
 ## Usage
 
-The examples below use `uv run pyaisync`, which is what you type inside a clone. If you installed the command
-(options 2 or 3 above), drop the `uv run` prefix.
+The examples below use `uv run pyaisync`, which works when it is a dependency of your project. If you installed it
+as a global command (`uv tool install`), drop the `uv run` prefix.
 
 ```bash
 uv run pyaisync init                  # create .ai/ (detects existing targets)
