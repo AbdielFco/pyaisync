@@ -36,6 +36,9 @@ class JsonOp:
     key_path: tuple[str, ...]
     kind: str
     entries: dict[str, str] = field(default_factory=dict)
+    # kind "list" only: native items that `import` converted into `.ai/`. `generate --adopt`
+    # replaces them (otherwise the converted copy and the original would both be active).
+    claimed: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -64,6 +67,7 @@ def load(root: Path, rel: str = MANIFEST) -> Manifest:
                     key_path=tuple(str(k) for k in op["key_path"]),
                     kind=str(op["kind"]),
                     entries={str(k): str(v) for k, v in op["entries"].items()},
+                    claimed={str(k): str(v) for k, v in op.get("claimed", {}).items()},
                 )
                 for oid, op in st["ops"].items()
             }
@@ -84,6 +88,7 @@ def dumps(manifest: Manifest) -> bytes:
                         "key_path": list(op.key_path),
                         "kind": op.kind,
                         "entries": dict(sorted(op.entries.items())),
+                        **({"claimed": dict(sorted(op.claimed.items()))} if op.claimed else {}),
                     }
                     for oid, op in sorted(st.ops.items())
                 },

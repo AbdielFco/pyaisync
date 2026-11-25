@@ -129,7 +129,8 @@ hand-edited managed files. Meant for pre-commit and CI.
   agents/*.md                   # subagents
   skills/<name>/SKILL.md        # + auxiliary files (copied as-is)
   mcp.toml                      # MCP servers
-  hooks.toml                    # hooks
+  hooks.toml                    # hooks (when and what runs)
+  hooks/*                       # hook scripts, run in place (referenced as .ai/hooks/<file>)
   permissions.toml              # permissions
   .manifest.json                # generated, committed
 ```
@@ -423,7 +424,9 @@ Dev tools: `pytest`, `ruff`, `mypy` (dev-dependencies only). The CLI uses `argpa
 
 ## 12. Phases and acceptance criteria
 
-**Progress (2026-11-25):** Phases 0-4 ✅ (96 tests, ruff and strict mypy green).
+**Progress (2026-11-25):** Phases 0-4 ✅ (115 tests, ruff and strict mypy green). Post-phase-4 fixes: Cursor-only hook events,
+`pattern`/`fail_closed`, `.ai/hooks/` scripts (copied on import), import "claims" so converted items are replaced instead of
+duplicated, executable bits, normal file modes, and a guided `init`.
 **Documented deviation:** skills are written to one shared path (`.claude/skills/` or
 `.agents/skills/`) instead of one per target, because all 3 targets read those paths (see `docs/formats`).
 

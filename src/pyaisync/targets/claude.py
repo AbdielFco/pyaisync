@@ -4,7 +4,14 @@ from typing import Any
 
 from .. import frontmatter
 from ..model import Agent, Hook, McpServer, Model, PermissionSet
-from ..vocab import CLAUDE_TOOLS, HOOK_EVENTS, claude_matcher, parse_rule, translate_env
+from ..vocab import (
+    CLAUDE_TOOLS,
+    HOOK_EVENTS,
+    claude_command,
+    claude_matcher,
+    parse_rule,
+    translate_env,
+)
 from .base import HEADER, JsonMerge, Output, Plan, command_meta, rules_document, text
 
 _ENV = "${{name}}"  # Claude Code expands ${VAR} in .mcp.json
@@ -44,7 +51,7 @@ def _server(s: McpServer) -> dict[str, Any]:
 
 
 def _hook_group(h: Hook) -> dict[str, Any]:
-    handler: dict[str, Any] = {"type": "command", "command": h.command}
+    handler: dict[str, Any] = {"type": "command", "command": claude_command(h.command)}
     if h.timeout is not None:
         handler["timeout"] = h.timeout
     group: dict[str, Any] = {}
@@ -109,9 +116,19 @@ class Claude:
             groups: dict[str, list[Any]] = {}
             for h in m.hooks:
                 native = HOOK_EVENTS[h.event][0]
+                if native is None:
+                    warnings.append(
+                        f"hook {h.event} ({h.command}): Claude Code has no such event; skipped for Claude"
+                    )
+                    continue
+                if h.fail_closed:
+                    warnings.append(
+                        f"hook {h.event}: 'fail_closed' has no Claude Code equivalent "
+                        "(make the script exit with code 2 to block)"
+                    )
                 groups.setdefault(native, []).append(_hook_group(h))
                 where = f"[{claude_matcher(h.matcher)}]" if h.matcher else ""
-                notices.append(f"claude: {native}{where} runs: {h.command}")
+                notices.append(f"claude: {native}{where} runs: {claude_command(h.command)}")
             for native, items in sorted(groups.items()):
                 merges.append(JsonMerge(".claude/settings.json", ("hooks", native), items))
         if feats["permissions"] and m.permissions:

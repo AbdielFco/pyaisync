@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..errors import PyAisyncError
 from ..model import Model
+from ..vocab import referenced_scripts
 from .base import JsonMerge, Output, Plan, Target
 from .claude import Claude
 from .cursor import Cursor
@@ -41,7 +42,15 @@ def build_plan(model: Model, targets: tuple[str, ...]) -> Plan:
             base = ".claude/skills" if "claude" in applicable else ".agents/skills"
             for rel, data in sorted(skill.files.items()):
                 path = f"{base}/{skill.name}/{rel}"
-                outputs[path] = Output(path, data)
+                outputs[path] = Output(path, data, rel in skill.executable)
+    if model.config.features["hooks"]:
+        missing = {
+            f".ai/hooks/{rel}"
+            for h in model.hooks
+            for rel in referenced_scripts(h.command)
+            if not (model.root / ".ai/hooks" / rel).is_file()
+        }
+        warnings += [f"hook script not found: {m}" for m in sorted(missing)]
     return Plan(
         sorted(outputs.values(), key=lambda o: o.path),
         warnings,

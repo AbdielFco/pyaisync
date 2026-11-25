@@ -156,6 +156,9 @@ def _list_op(
     merge: JsonMerge,
     old: mf.JsonOp | None,
     report: Report,
+    *,
+    force: bool,
+    adopt: bool,
 ) -> tuple[mf.JsonOp, bool]:
     kp, desired = merge.key_path, merge.entries
     assert isinstance(desired, list) and kp
@@ -168,9 +171,28 @@ def _list_op(
         if cur_list is not _MISSING and not isinstance(cur_list, list):
             raise PyAisyncError(f"{rel}: '{'.'.join(kp)}' is not a JSON array")
     owned = set(old.entries) if old else set()
+    claimed = dict(old.claimed) if old else {}
     want = {mf.value_hash(item): item for item in desired}
     changed = False
-    if cur_list is not _MISSING:
+    if cur_list is _MISSING:
+        claimed = {}  # nothing left to replace
+    else:
+        present = {mf.value_hash(item) for item in cur_list}
+        for h in list(claimed):
+            if h in want or h not in present:
+                del claimed[h]  # identical to what we generate, or already gone
+            elif adopt or force:
+                idx = next(i for i, it in enumerate(cur_list) if mf.value_hash(it) == h)
+                report.deleted.append(_item_label(rel, kp, cur_list[idx]))
+                del cur_list[idx]
+                del claimed[h]
+                changed = True
+            else:
+                item = next(it for it in cur_list if mf.value_hash(it) == h)
+                report.conflicts.append(
+                    f"{_item_label(rel, kp, item)}: was imported into .ai/ and will be replaced "
+                    "by its generated version (use --adopt to replace it)"
+                )
         present = {mf.value_hash(item) for item in cur_list}
         for h in list(owned):
             if h in want or h not in present:
@@ -187,7 +209,7 @@ def _list_op(
                 report.created.append(_item_label(rel, kp, item))
                 cur_list.append(copy.deepcopy(item))
                 changed = True
-    return mf.JsonOp(kp, "list", {h: h for h in want}), changed
+    return mf.JsonOp(kp, "list", {h: h for h in want}, claimed), changed
 
 
 def _plan_json_file(
@@ -224,11 +246,11 @@ def _plan_json_file(
     changed = False
     for oid, merge in sorted(wanted.items()):
         if isinstance(merge.entries, list):
-            op, did = _list_op(work, rel, merge, old_ops.get(oid), report)
+            op, did = _list_op(work, rel, merge, old_ops.get(oid), report, force=force, adopt=adopt)
         else:
             op, did = _dict_op(work, rel, merge, old_ops.get(oid), report, force=force, adopt=adopt)
         changed = changed or did
-        if op.entries:
+        if op.entries or op.claimed:
             new_ops[oid] = op
     state = mf.JsonFileState(old.created if old else not existed, new_ops) if new_ops else None
     if not changed:
@@ -252,6 +274,7 @@ def apply(
     report = Report(warnings=list(plan.warnings), notices=list(plan.notices))
     old = mf.load(root, manifest_rel)
     desired = {o.path: o.content for o in plan.outputs}
+    executable = {o.path for o in plan.outputs if o.executable}
     new_files: dict[str, str] = {}
 
     for rel, data in desired.items():
@@ -314,7 +337,7 @@ def apply(
 
     for rel in report.created + report.updated:
         if rel in desired:
-            atomic_write(safe_join(root, rel), desired[rel])
+            atomic_write(safe_join(root, rel), desired[rel], executable=rel in executable)
     for rel in report.deleted:
         if rel in old.files and rel not in desired:
             p = safe_join(root, rel)

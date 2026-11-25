@@ -112,7 +112,8 @@ def test_claude_import_and_roundtrip(ai: Path, capsys) -> None:  # type: ignore[
     assert run(ai, "generate", "--adopt") == 0
     out = jload(ai, ".claude/settings.json")
     assert out["model"] == "opus"
-    assert out["hooks"]["PreToolUse"][0]["matcher"] == "Bash|Edit"
+    # exactly one item: the converted original is replaced, not duplicated
+    assert [g["matcher"] for g in out["hooks"]["PreToolUse"]] == ["Bash|Edit|Write"]
     assert out["permissions"]["deny"] == ["Read(.env*)", "WebFetch(domain:evil.example)"]
     assert run(ai, "check") == 0
     # importing again must not re-import what pyaisync generated
@@ -138,7 +139,7 @@ def test_claude_unsafe_things_are_skipped_not_widened(ai: Path, capsys) -> None:
                         {"matcher": "mcp__.*", "hooks": [{"type": "command", "command": "x"}]},
                         {"matcher": "Bash", "hooks": [{"type": "http", "url": "https://h"}]},
                     ],
-                    "Notification": [{"hooks": [{"type": "command", "command": "n"}]}],
+                    "Elicitation": [{"hooks": [{"type": "command", "command": "n"}]}],
                 },
                 "permissions": {"allow": ["WebFetch", "Task", "Bash(ls)"], "deny": ["WebFetch"]},
             }

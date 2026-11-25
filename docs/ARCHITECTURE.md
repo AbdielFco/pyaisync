@@ -78,7 +78,13 @@ and later emptied is deleted. Files with comments (JSONC) are refused, never rew
     },
     ".claude/settings.json": {
       "created": false,
-      "ops": { "hooks/Stop": { "key_path": ["hooks", "Stop"], "kind": "list", "entries": { "<hash>": "<hash>" } } }
+      "ops": {
+        "hooks/Stop": {
+          "key_path": ["hooks", "Stop"], "kind": "list",
+          "entries": { "<hash>": "<hash>" },
+          "claimed": { "<hash of an original item>": "<same>" }
+        }
+      }
     }
   }
 }
@@ -92,6 +98,13 @@ Read-only on native files; write only to `.ai/`. Three rules that must hold for 
    may be widened). Unmappable agents are skipped rather than imported with more tools than they had.
 2. **Never write a literal secret into `.ai/`.** Sensitive values become `${VAR}` references, with a warning.
 3. **Never re-import what pyaisync generated** (detected through the manifest hashes and the generated marker).
+4. **Claim what you convert.** A native list item (a hook, a permission rule) that `import` turns into `.ai/` content is
+   recorded as `claimed` in the manifest. The next `generate --adopt` removes the claimed original and writes the generated
+   version; without `--adopt` it reports a conflict. Without claims, a converted item whose regenerated form differs (a rewritten
+   script path, a matcher normalised to `Bash|Edit|Write`) would exist twice and the hook would run twice.
+5. **Hook scripts are copied, never moved.** Commands that run a script from a tool folder (`.cursor/`, `.claude/`, `.opencode/`,
+   `hooks/`) get that script copied into `.ai/hooks/` (executable bit kept, symlinks and oversized files refused, existing
+   different files never overwritten) and the command rewritten; the originals are left alone.
 
 ## Design decisions worth remembering
 
@@ -100,6 +113,10 @@ Read-only on native files; write only to `.ai/`. Three rules that must hold for 
 - **OpenCode: V2 schema only** (`mcp.servers`, `permissions` as an ordered list where the last match wins, so the generator
   emits allow, then ask, then deny).
 - **Hooks are data.** pyaisync never runs them; `generate`/`check` print every command that will run.
+- **Hook scripts live in `.ai/hooks/` and run in place** (no copy per tool, so no drift). Claude Code gets
+  `"${CLAUDE_PROJECT_DIR}"/.ai/hooks/...` because it runs hooks in the session's working directory.
+- **File modes.** Generated files get the normal umask mode (not the temp file's 0600); skill scripts and imported hook scripts keep
+  their executable bit (`Output.executable`, `Skill.executable`, `Item.executable`).
 - **Unsupported is a warning, never an approximation** (Cursor has no `ask` and no tool allowlist; OpenCode has no
   declarative hooks; Cursor cannot match `glob`/`web` tools, so that hook is skipped for Cursor).
 - **Output is deterministic**: sorted iteration, fixed JSON indentation, `\n` endings. `check` depends on it.
@@ -121,7 +138,7 @@ often.
 
 ## Testing
 
-`uv run pytest` (96 tests), `uv run ruff check . && uv run ruff format --check .`, `uv run mypy` (strict). All three must be
+`uv run pytest` (115 tests), `uv run ruff check . && uv run ruff format --check .`, `uv run mypy` (strict). All three must be
 green before committing.
 
 - Tests build a throw-away repo with the `repo` fixture (`tests/conftest.py`) or `tmp_path`, and run the CLI through

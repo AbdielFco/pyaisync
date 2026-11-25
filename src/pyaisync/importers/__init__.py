@@ -8,7 +8,7 @@ from typing import Any
 from .. import frontmatter
 from ..config import AI_DIR
 from ..errors import PyAisyncError
-from ..safefs import atomic_write, read_tree, safe_join
+from ..safefs import atomic_write, read_tree, safe_join, tree_modes
 from .common import ImportReport, Item, read_native, slug
 from .structured import agent_items, import_structured
 
@@ -75,7 +75,15 @@ def _collect_skills(directory: Path, rep: ImportReport) -> list[Item]:
         except PyAisyncError as exc:
             rep.warnings.append(str(exc))
             continue
-        items.append(Item("skills", name, {f"skills/{name}/{r}": b for r, b in tree.items()}))
+        modes = tree_modes(d)
+        items.append(
+            Item(
+                "skills",
+                name,
+                {f"skills/{name}/{r}": b for r, b in tree.items()},
+                frozenset(f"skills/{name}/{r}" for r in modes),
+            )
+        )
     return items
 
 
@@ -124,7 +132,8 @@ def _rename(item: Item, new: str) -> Item:
         else:
             parts[1] = f"{new}.md"
         files["/".join(parts)] = data
-    return Item(item.kind, new, files)
+    renamed = {"/".join([*rel.split("/")[:1], new, *rel.split("/")[2:]]) for rel in item.executable}
+    return Item(item.kind, new, files, frozenset(renamed))
 
 
 def import_target(
@@ -169,7 +178,9 @@ def import_target(
                 label = f"{item.kind}/{item.name}"
         for rel, data in item.files.items():
             if write:
-                atomic_write(safe_join(root, f"{AI_DIR}/{rel}"), data)
+                atomic_write(
+                    safe_join(root, f"{AI_DIR}/{rel}"), data, executable=rel in item.executable
+                )
         rep.written.append(label)
     import_structured(root, target, rep, on_conflict, write)
     return rep

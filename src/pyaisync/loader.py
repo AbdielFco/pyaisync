@@ -21,9 +21,10 @@ from .model import (
     Skill,
     validate_name,
 )
-from .safefs import read_text, read_tree
+from .safefs import read_text, read_tree, tree_modes
 from .vocab import (
     HOOK_EVENTS,
+    PATTERN_EVENTS,
     SECRET_VALUE,
     TOOL_MATCHER_EVENTS,
     TOOLS,
@@ -163,6 +164,16 @@ def _load_hooks(path: Path) -> list[Hook]:
             raise PyAisyncError(
                 f"{where}: 'matcher' is only valid for {sorted(TOOL_MATCHER_EVENTS)}"
             )
+        pattern = cfg.get("pattern", "")
+        if not isinstance(pattern, str):
+            raise PyAisyncError(f"{where}: 'pattern' must be a string")
+        if pattern and event not in PATTERN_EVENTS:
+            raise PyAisyncError(
+                f"{where}: 'pattern' is only valid for Cursor-only events {sorted(PATTERN_EVENTS)}"
+            )
+        fail_closed = cfg.get("fail_closed", False)
+        if not isinstance(fail_closed, bool):
+            raise PyAisyncError(f"{where}: 'fail_closed' must be true or false")
         timeout = cfg.get("timeout")
         if timeout is not None and (
             isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 3600
@@ -177,6 +188,8 @@ def _load_hooks(path: Path) -> list[Hook]:
                 matcher=tuple(dict.fromkeys(matcher)),
                 timeout=timeout,
                 targets=_targets(cfg, Path(where)),
+                pattern=pattern,
+                fail_closed=fail_closed,
             )
         )
     return out
@@ -278,7 +291,14 @@ def load_model(root: Path) -> Model:
             if not (d / "SKILL.md").is_file():
                 raise PyAisyncError(f"{d}: missing SKILL.md")
             meta, _ = frontmatter.parse(read_text(d / "SKILL.md"), str(d / "SKILL.md"))
-            skills.append(Skill(name=name, files=read_tree(d), targets=_targets(meta, d)))
+            skills.append(
+                Skill(
+                    name=name,
+                    files=read_tree(d),
+                    executable=tree_modes(d),
+                    targets=_targets(meta, d),
+                )
+            )
 
     return Model(
         config=config,

@@ -29,6 +29,7 @@ class Item:
     kind: str  # rules | commands | skills | agents
     name: str
     files: dict[str, bytes]  # path relative to .ai/ -> content
+    executable: frozenset[str] = frozenset()  # paths (relative to .ai/) that keep +x
 
 
 def slug(raw: str) -> str | None:

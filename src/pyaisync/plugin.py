@@ -47,7 +47,7 @@ def build_claude_plugin(model: Model) -> Plan:
             continue
         for src, dst in _MOVES:
             if out.path.startswith(src):
-                outputs.append(Output(dst + out.path[len(src) :], out.content))
+                outputs.append(Output(dst + out.path[len(src) :], out.content, out.executable))
                 break
 
     hooks: dict[str, Any] = {}

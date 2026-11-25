@@ -13,6 +13,7 @@ HEADER = f"<!-- {GENERATED_MARK} from .ai/ - do not edit by hand; run 'pyaisync 
 class Output:
     path: str  # relative to the repo root, posix
     content: bytes
+    executable: bool = False
 
 
 @dataclass(frozen=True)

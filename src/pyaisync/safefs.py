@@ -63,12 +63,33 @@ def read_tree(directory: Path) -> dict[str, bytes]:
     return files
 
 
-def atomic_write(path: Path, data: bytes) -> None:
+def _default_mode() -> int:
+    umask = os.umask(0)
+    os.umask(umask)
+    return 0o666 & ~umask
+
+
+def tree_modes(directory: Path) -> frozenset[str]:
+    """Relative paths of the files `read_tree` would read that have an executable bit."""
+    found: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fn in filenames:
+            p = Path(dirpath) / fn
+            if not fn.startswith(".") and not p.is_symlink() and p.stat().st_mode & 0o111:
+                found.add(p.relative_to(directory).as_posix())
+    return frozenset(found)
+
+
+def atomic_write(path: Path, data: bytes, *, executable: bool = False) -> None:
+    """Write via a temp file + rename. Mode is the umask default (0644-ish), +x when asked."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".pyaisync-", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
+        mode = _default_mode()
+        os.chmod(tmp, mode | 0o111 if executable else mode)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):

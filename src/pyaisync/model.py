@@ -66,6 +66,8 @@ class Hook:
     matcher: tuple[str, ...] = ()  # canonical tools; only for tool events
     timeout: int | None = None  # seconds
     targets: tuple[str, ...] = ("*",)
+    pattern: str = ""  # raw regex for Cursor-only events
+    fail_closed: bool = False  # Cursor: block the action when the hook itself fails
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class PermissionSet:
 class Skill:
     name: str
     files: dict[str, bytes]  # relative posix path -> content
+    executable: frozenset[str] = frozenset()  # paths that keep their executable bit
     targets: tuple[str, ...] = ("*",)
 
 

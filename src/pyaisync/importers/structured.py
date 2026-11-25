@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +22,12 @@ from .. import manifest as mf
 from ..errors import PyAisyncError
 from ..loader import _load_hooks, _load_mcp, _load_permissions
 from ..model import Hook, McpServer, validate_name
-from ..safefs import atomic_write, read_text
+from ..safefs import MAX_FILE_BYTES, atomic_write, read_text
 from ..vocab import (
     CURSOR_TOOLS,
     HOOK_EVENTS,
     OPENCODE_ACTIONS,
+    PATTERN_EVENTS,
     SECRET_VALUE,
     TOOL_MATCHER_EVENTS,
     check_secret,
@@ -44,8 +46,8 @@ CLAUDE_TOOLS_REV = {
     "WebSearch": "web",
 }
 CURSOR_TOOLS_REV = {v: k for k, v in CURSOR_TOOLS.items()}
-CLAUDE_EVENTS_REV = {v[0]: k for k, v in HOOK_EVENTS.items()}
-CURSOR_EVENTS_REV = {v[1]: k for k, v in HOOK_EVENTS.items()}
+CLAUDE_EVENTS_REV = {v[0]: k for k, v in HOOK_EVENTS.items() if v[0] is not None}
+CURSOR_EVENTS_REV = {v[1]: k for k, v in HOOK_EVENTS.items() if v[1] is not None}
 _ENV_PATTERNS = {
     "claude": re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}"),
     "cursor": re.compile(r"\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}"),
@@ -66,6 +68,9 @@ _AGENT_UNIMPORTED = (
     "is_background",
 )
 _RANK = {"allow": 0, "ask": 1, "deny": 2}
+
+# native list items that were converted: (file, key path) -> hashes. See manifest.JsonOp.claimed.
+Claims = dict[tuple[str, tuple[str, ...]], set[str]]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -394,6 +399,8 @@ def _hook_from(
     timeout: Any,
     label: str,
     rep: ImportReport,
+    pattern: str = "",
+    fail_closed: bool = False,
 ) -> Hook | None:
     if not isinstance(command, str) or not command.strip() or "\n" in command or "\r" in command:
         rep.warnings.append(f"{label}: command is empty or multi-line; skipped")
@@ -409,7 +416,14 @@ def _hook_from(
         if isinstance(timeout, int) and not isinstance(timeout, bool) and 1 <= timeout <= 3600
         else None
     )
-    return Hook(event=event, command=command.strip(), matcher=matcher_tools, timeout=t)
+    return Hook(
+        event=event,
+        command=command.strip(),
+        matcher=matcher_tools,
+        timeout=t,
+        pattern=pattern,
+        fail_closed=fail_closed,
+    )
 
 
 def _matcher_tools(
@@ -430,7 +444,9 @@ def _matcher_tools(
     return tuple(dict.fromkeys(table[t] for t in tokens))
 
 
-def hooks_from(root: Path, target: str, rep: ImportReport, owned: _Owned) -> list[Hook]:
+def hooks_from(
+    root: Path, target: str, rep: ImportReport, owned: _Owned, claims: Claims
+) -> list[Hook]:
     if target == "opencode":
         return []
     rel = ".claude/settings.json" if target == "claude" else ".cursor/hooks.json"
@@ -456,7 +472,9 @@ def hooks_from(root: Path, target: str, rep: ImportReport, owned: _Owned) -> lis
                 matcher = _matcher_tools(item.get("matcher"), CLAUDE_TOOLS_REV, "|,", label, rep)
                 if matcher is None:
                     continue
-                for handler in item.get("hooks", []):
+                handlers = item.get("hooks", [])
+                converted = 0
+                for handler in handlers:
                     if not isinstance(handler, dict) or handler.get("type", "command") != "command":
                         rep.warnings.append(
                             f"{label}: only command hooks are imported; skipped one"
@@ -467,20 +485,111 @@ def hooks_from(root: Path, target: str, rep: ImportReport, owned: _Owned) -> lis
                     )
                     if hook:
                         out.append(hook)
+                        converted += 1
+                if handlers and converted == len(handlers):  # the whole group was converted
+                    claims.setdefault((rel, ("hooks", native)), set()).add(mf.value_hash(item))
             else:
                 if item.get("type", "command") != "command":
                     rep.warnings.append(f"{label}: prompt hooks are not imported; skipped")
                     continue
-                matcher = _matcher_tools(item.get("matcher"), CURSOR_TOOLS_REV, "|", label, rep)
-                if matcher is None:
-                    continue
-                if item.get("failClosed") or item.get("loop_limit") is not None:
-                    rep.warnings.append(f"{label}: 'failClosed'/'loop_limit' are not imported")
+                pattern = ""
+                if event in PATTERN_EVENTS:
+                    raw_matcher = item.get("matcher")
+                    cursor_tools: tuple[str, ...] | None = ()
+                    if isinstance(raw_matcher, str) and raw_matcher not in ("", "*"):
+                        pattern = raw_matcher
+                else:
+                    cursor_tools = _matcher_tools(
+                        item.get("matcher"), CURSOR_TOOLS_REV, "|", label, rep
+                    )
+                    if cursor_tools is None:
+                        continue
+                if item.get("loop_limit") is not None:
+                    rep.warnings.append(f"{label}: 'loop_limit' is not imported")
                 hook = _hook_from(
-                    event, item.get("command"), matcher, item.get("timeout"), label, rep
+                    event,
+                    item.get("command"),
+                    cursor_tools or (),
+                    item.get("timeout"),
+                    label,
+                    rep,
+                    pattern=pattern,
+                    fail_closed=item.get("failClosed") is True,
                 )
                 if hook:
                     out.append(hook)
+                    claims.setdefault((rel, ("hooks", native)), set()).add(mf.value_hash(item))
+    return out
+
+
+# --- hook scripts: copy what a hook runs into .ai/hooks/ so the source is self-contained -------------
+
+_SCRIPT_RE = re.compile(
+    r"""(?<![\w./-])(?:"?\$\{?CLAUDE_PROJECT_DIR\}?"?/|\./)?"""
+    r"""((?:\.cursor|\.claude|\.opencode|hooks)/[^\s"\';|&<>]+)"""
+)
+
+
+def adopt_scripts(root: Path, hooks: list[Hook], rep: ImportReport, write: bool) -> list[Hook]:
+    """Copy scripts that hook commands run from tool folders (or `hooks/`) into `.ai/hooks/`.
+
+    The command is rewritten to point at the copy. The original files are never touched.
+    """
+    ai_hooks = root / ".ai" / "hooks"
+    taken: dict[str, str] = {}  # script name -> source it was copied from
+    siblings: dict[str, set[str]] = {}
+    resolved_root = root.resolve()
+
+    def adopt(match: re.Match[str]) -> str:
+        rel = match.group(1)
+        src = root / rel
+        if src.is_symlink() or not src.is_file():
+            return match.group(0)
+        try:
+            src.resolve().relative_to(resolved_root)
+        except ValueError:
+            return match.group(0)
+        if src.stat().st_size > MAX_FILE_BYTES:
+            rep.warnings.append(f"hooks/scripts: {rel} is too large; not copied")
+            return match.group(0)
+        name = src.name
+        data = src.read_bytes()
+        dest = ai_hooks / name
+        label = f"hooks/scripts/{name}"
+        if taken.get(name, rel) != rel:
+            rep.warnings.append(
+                f"{label}: another script named {name} was already copied; {rel} kept"
+            )
+            return match.group(0)
+        if name not in taken:
+            if dest.exists() and dest.read_bytes() != data:
+                rep.warnings.append(
+                    f"{label}: .ai/hooks/{name} already exists with other content; {rel} kept"
+                )
+                return match.group(0)
+            if dest.exists():
+                rep.unchanged.append(label)
+            else:
+                if write:
+                    atomic_write(dest, data, executable=bool(src.stat().st_mode & 0o111))
+                rep.written.append(label)
+            taken[name] = rel
+            siblings.setdefault(str(src.parent.relative_to(root)), set()).add(name)
+        return f".ai/hooks/{name}"
+
+    out: list[Hook] = []
+    for h in hooks:
+        out.append(replace(h, command=_SCRIPT_RE.sub(adopt, h.command)))
+    for folder, copied in sorted(siblings.items()):
+        others = sorted(
+            p.name for p in (root / folder).iterdir() if p.is_file() and p.name not in copied
+        )
+        others = [o for o in others if o != "hooks.json"]
+        if others:
+            rep.warnings.append(
+                f"hooks/scripts: {folder}/ also holds {others[:5]}; if the scripts need those "
+                "files (helpers, config), copy them to .ai/hooks/ yourself"
+            )
     return out
 
 
@@ -579,7 +688,7 @@ def _opencode_rules(items: list[Any], rep: ImportReport) -> dict[str, list[str]]
 
 
 def permissions_from(
-    root: Path, target: str, rep: ImportReport, owned: _Owned
+    root: Path, target: str, rep: ImportReport, owned: _Owned, claims: Claims
 ) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {"allow": [], "ask": [], "deny": []}
     if target == "opencode":
@@ -608,6 +717,7 @@ def permissions_from(
             if rule is not None:
                 parse_rule(rule, "import")
                 out[effect].append(rule)
+                claims.setdefault((rel, ("permissions", effect)), set()).add(mf.value_hash(raw))
     return out
 
 
@@ -660,7 +770,11 @@ def dump_hooks(hooks: list[Hook]) -> str:
         out.append(f"event = {_q(h.event)}")
         if h.matcher:
             out.append(f"matcher = {_arr(h.matcher)}")
+        if h.pattern:
+            out.append(f"pattern = {_q(h.pattern)}")
         out.append(f"command = {_q(h.command)}")
+        if h.fail_closed:
+            out.append("fail_closed = true")
         if h.timeout is not None:
             out.append(f"timeout = {h.timeout}")
         if h.targets != ("*",):
@@ -716,7 +830,8 @@ def import_structured(
             atomic_write(ai / "mcp.toml", dump_mcp(list(existing.values())).encode())
 
     # --- hooks
-    hooks = hooks_from(root, target, rep, owned)
+    claims: Claims = {}
+    hooks = adopt_scripts(root, hooks_from(root, target, rep, owned, claims), rep, write)
     if hooks:
         existing_hooks = _load_hooks(ai / "hooks.toml")
         merged = list(existing_hooks)
@@ -731,7 +846,7 @@ def import_structured(
             atomic_write(ai / "hooks.toml", dump_hooks(merged).encode())
 
     # --- permissions
-    new_perms = permissions_from(root, target, rep, owned)
+    new_perms = permissions_from(root, target, rep, owned, claims)
     if any(new_perms.values()):
         have = _load_permissions(ai / "permissions.toml")
         merged_p = {"allow": list(have.allow), "ask": list(have.ask), "deny": list(have.deny)}
@@ -751,3 +866,14 @@ def import_structured(
                 changed = True
         if changed and write:
             atomic_write(ai / "permissions.toml", dump_permissions(merged_p).encode())
+
+    # --- remember which native list items were converted, so `generate --adopt` replaces them
+    if claims and write:
+        manifest = mf.load(root)
+        for (rel, key_path), hashes in claims.items():
+            state = manifest.json.setdefault(rel, mf.JsonFileState(created=False))
+            op = state.ops.setdefault(mf.op_id(key_path), mf.JsonOp(key_path, "list"))
+            for digest in hashes:
+                if digest not in op.entries:
+                    op.claimed[digest] = digest
+        atomic_write(root / mf.MANIFEST, mf.dumps(manifest))

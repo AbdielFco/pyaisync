@@ -36,23 +36,94 @@ Then use it as `uv run pyaisync ...` (see the quick start below).
 
 </details>
 
-### Quick start
+## Getting started
 
-```bash
-cd your-repo
-uv run pyaisync init                 # create .ai/ (use `init --from claude` to import an existing setup)
-# edit .ai/rules/*.md, .ai/commands/*.md, ...
-uv run pyaisync generate --dry-run   # preview
-uv run pyaisync generate             # write CLAUDE.md, .cursor/, AGENTS.md, ...
-uv run pyaisync check                # in CI: fails if generated files drifted from .ai/
+`pyaisync` has one source of truth, the `.ai/` folder. You edit `.ai/`; `generate` writes the files each tool reads
+(`CLAUDE.md`, `.cursor/`, `AGENTS.md`, `.mcp.json`, ...). Never edit those generated files by hand.
+
+```mermaid
+flowchart TD
+    A{"Does the repo already have AI config?<br/>(CLAUDE.md, .cursor/, opencode.json, .mcp.json, hooks...)"}
+    A -- "No: new project" --> N1["uv run pyaisync init"]
+    N1 --> N2["edit the examples in .ai/<br/>and add what you need"]
+    A -- "Yes" --> E1["uv run pyaisync init --from claude<br/>(or cursor / opencode)"]
+    E1 --> E2["import the other tools you use:<br/>uv run pyaisync import cursor"]
+    E2 --> E3["read the warnings: they list<br/>everything that was NOT imported"]
+    N2 --> G1
+    E3 --> G1["uv run pyaisync generate --dry-run<br/>(preview)"]
+    G1 --> G2["uv run pyaisync generate<br/>(first time on existing files: add --adopt)"]
+    G2 --> G3["commit .ai/ and the generated files"]
+    G3 --> C["CI / pre-commit: uv run pyaisync check<br/>fails if generated files drifted"]
+    G3 --> D["later changes: edit .ai/ -> generate"]
 ```
 
-Commit `.ai/` together with the generated files. Run `uv run pyaisync check` in CI or as a pre-commit hook so the
-generated files cannot drift from the source.
+### A. New project
 
-Status: **complete (phases 0-4)**: rules, commands, skills, subagents, MCP, hooks, permissions, with
-`init`, `generate`, `check`, `list`, `import` (every feature) and `plugin claude`.
-See [PLAN.md](PLAN.md) for the design and [docs/formats](docs/formats/README.md) for the native formats it targets.
+```bash
+uv run pyaisync init                 # creates .ai/ with an example rule and command
+# edit .ai/rules/*.md, add .ai/commands/*.md, .ai/agents/*.md, .ai/mcp.toml, ...
+uv run pyaisync generate --dry-run   # preview
+uv run pyaisync generate             # writes CLAUDE.md, .cursor/, AGENTS.md, ...
+```
+
+### B. A repo that already has configuration
+
+```bash
+uv run pyaisync init --from claude   # creates .ai/ and imports CLAUDE.md, .claude/*, .mcp.json, settings hooks/permissions
+uv run pyaisync import cursor        # repeat for every other tool you use (cursor, opencode)
+uv run pyaisync generate --dry-run   # shows what will be created and which of your entries get replaced
+uv run pyaisync generate --adopt     # first time only: take over your existing files (it refuses without --adopt)
+```
+
+`import` never changes your files; it only writes to `.ai/`, and it **tells you everything it could not carry over**.
+After the first `generate --adopt`, the generated files are owned by pyaisync: edit `.ai/` from then on. Your own
+entries in shared JSON files (`.mcp.json`, `.claude/settings.json`, `opencode.json`, ...) are never touched.
+
+### What goes where in `.ai/`
+
+| You want to define | Put it in | It becomes |
+|---|---|---|
+| Project instructions | `.ai/rules/*.md` | `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/*.mdc` |
+| Prompt shortcuts | `.ai/commands/*.md` | `.claude/commands/`, `.cursor/commands/`, `.opencode/commands/` |
+| Subagents | `.ai/agents/*.md` | `.claude/agents/`, `.cursor/agents/`, `.opencode/agents/` |
+| Skills (with their files) | `.ai/skills/<name>/SKILL.md` | `.claude/skills/<name>/` (all three tools read it) |
+| MCP servers | `.ai/mcp.toml` | `.mcp.json`, `.cursor/mcp.json`, `opencode.json` |
+| Hooks (when and what runs) | `.ai/hooks.toml` | `.claude/settings.json`, `.cursor/hooks.json` |
+| **Hook scripts** (`gates.py`, `format.sh`, ...) | `.ai/hooks/` | **not copied**: hooks run them in place, see below |
+| Permissions | `.ai/permissions.toml` | `.claude/settings.json`, `.cursor/cli.json`, `opencode.json` |
+
+### Hook scripts
+
+A hook is a **command**; `.ai/hooks.toml` says when it runs, and the script it runs lives in `.ai/hooks/`:
+
+```toml
+# .ai/hooks.toml
+[[hooks]]
+event = "before_shell_execution"      # Cursor-only event: use `pattern` (a regex) to filter
+pattern = "git push|rm "
+command = "python3 .ai/hooks/gates.py"
+fail_closed = true                    # Cursor: block the action if the hook itself fails
+timeout = 10
+```
+
+The script stays in `.ai/hooks/gates.py` and every tool runs it from there: Cursor from the project root, and for
+Claude Code `pyaisync` writes `"${CLAUDE_PROJECT_DIR}"/.ai/hooks/gates.py` so it works from any directory.
+Nothing is copied, so there is no second version to drift.
+
+When you **import** hooks, the scripts their commands run (from `.cursor/hooks/`, `.claude/hooks/`, `.opencode/` or `hooks/`)
+are **copied** into `.ai/hooks/` (permissions kept) and the commands are rewritten to point at the copies. Your original files
+are left alone; delete them when you are satisfied. If a script needs other files from its folder (helpers, config),
+`import` lists them: copy those to `.ai/hooks/` yourself.
+
+### Day to day
+
+```bash
+# edit anything in .ai/, then:
+uv run pyaisync generate
+git add -A && git commit
+```
+
+The plan this project implements is [PLAN.md](PLAN.md).
 
 ## How it works
 
@@ -174,6 +245,12 @@ ask   = ["shell(git push*)"]
 deny  = ["read(.env*)", "shell(rm -rf*)"]
 ```
 
+Besides the events both tools share (`session_start`, `session_end`, `pre_tool_use`, `post_tool_use`,
+`post_tool_use_failure`, `user_prompt_submit`, `stop`, `subagent_start`, `subagent_stop`, `pre_compact`), there are
+Claude-only (`notification`) and Cursor-only events (`before_shell_execution`, `after_shell_execution`, `before_read_file`,
+`after_file_edit`, `before_mcp_execution`, `after_mcp_execution`, `after_agent_response`, `after_agent_thought`).
+An event that only one tool has is skipped, with a warning, for the other.
+
 `generate` and `check` print every hook command that will run. Rules or hooks a target cannot express
 (Cursor has no `ask`; OpenCode has no declarative hooks) are skipped **with a warning**, never approximated.
 Your own entries in `.claude/settings.json`, `.cursor/hooks.json`, etc. are preserved.
@@ -222,7 +299,7 @@ Features a target cannot express are skipped **with a warning**, never approxima
 
 | Feature | Limitation |
 |---|---|
-| Hooks | OpenCode has no declarative hooks (skipped). Cursor cannot match `glob`/`web` tools (that hook is skipped for Cursor). |
+| Hooks | OpenCode has no declarative hooks (skipped). Cursor cannot match `glob`/`web` tools (that hook is skipped for Cursor). Events that exist in one tool only are skipped for the other. `fail_closed` and `pattern` are Cursor-only (`fail_closed` is warned about for Claude). Cursor's `loop_limit`, prompt hooks and Tab hooks are not imported. |
 | Permissions | Cursor's apply to the **Cursor CLI only** (`.cursor/cli.json`) and have no `ask`. Claude cannot express path rules for `grep`/`glob`. |
 | Subagents | Cursor has no tool allowlist: only `readonly` is derived from `tools`. A non-`inherit` `model` is passed through verbatim and warned about, because model names differ per tool. |
 | MCP | OpenCode V2 offers only Streamable HTTP, so `sse` servers are skipped for it. |
@@ -232,6 +309,7 @@ Features a target cannot express are skipped **with a warning**, never approxima
 ### Known technical limits
 - **JSONC is refused.** `opencode.json`, `.mcp.json`, `settings.json` and similar files that contain comments are not
   merged (that would destroy the comments). Remove the comments or manage those files by hand.
+- **Hook scripts' neighbours.** `import` copies the scripts a hook command names, not the other files they may read.
 - **JSON formatting.** A shared JSON file is rewritten with 2-space indentation, only when one of its entries changes.
 - **List items are matched by content.** If you edit by hand a hook or permission that pyaisync added, it stops being
   recognised as generated: it is treated as yours and the regenerated item is added next to it.

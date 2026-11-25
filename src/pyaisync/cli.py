@@ -102,17 +102,44 @@ def cmd_init(args: argparse.Namespace, root: Path) -> int:
     atomic_write(
         ai / "config.toml", f"version = 1\ntargets = [{tlist}]\n\n[features]\n{feats}\n".encode()
     )
-    if args.from_target:
-        (ai / "skills").mkdir(exist_ok=True)
-    else:
+    existing = detect_targets(root)
+    # A repo that already has AI configuration should import it, not start from the examples.
+    examples = not args.from_target and not existing
+    (ai / "skills").mkdir(exist_ok=True)
+    if examples:
         for rel, content in _TEMPLATES.items():
             atomic_write(ai / rel, content.encode())
-        (ai / "skills").mkdir(exist_ok=True)
         atomic_write(ai / "skills/.gitkeep", b"")
     print(f"Created {AI_DIR}/ with targets: {', '.join(targets)}")
     if args.from_target:
         _print_import(import_target(root, args.from_target, on_conflict="skip", write=True))
-    print("Next step: pyaisync generate --dry-run")
+    others = [t for t in existing if t != args.from_target]
+    print()
+    if args.from_target:
+        print("Next steps:")
+        print(
+            f"  1. Review {AI_DIR}/ and the warnings above (anything not imported stays in your files)."
+        )
+        for t in others:
+            print(f"  -  Also found {t} configuration: pyaisync import {t}")
+        print("  2. pyaisync generate --dry-run    # preview what will be created or replaced")
+        print(
+            "  3. pyaisync generate --adopt      # first time only: take over your existing files"
+        )
+        print("  4. pyaisync check                 # later, in CI: fails if generated files drift")
+    elif existing:
+        print(f"Existing configuration found for: {', '.join(existing)}. Bring it in first:")
+        for t in existing:
+            print(f"  pyaisync import {t}")
+        print("Then: pyaisync generate --dry-run, and pyaisync generate --adopt (first time only).")
+    else:
+        print("Next steps:")
+        print(
+            f"  1. Edit the examples in {AI_DIR}/ (rules/, commands/); add agents/, skills/, mcp.toml, ..."
+        )
+        print("  2. pyaisync generate --dry-run    # preview")
+        print("  3. pyaisync generate              # write CLAUDE.md, .cursor/, AGENTS.md, ...")
+        print("  4. pyaisync check                 # later, in CI: fails if generated files drift")
     return 0
 
 
@@ -164,7 +191,7 @@ def cmd_generate(args: argparse.Namespace, root: Path, *, check: bool = False) -
     plan = build_plan(model, targets)
     write = not (check or args.dry_run)
     rep = apply(root, plan, write=write, force=args.force, adopt=args.adopt)
-    _print_report(rep, write=write)
+    _print_report(rep, write=write and not rep.conflicts)
     if rep.conflicts:
         print("Nothing was written because of the conflicts above.", file=sys.stderr)
         return 2
@@ -193,7 +220,7 @@ def cmd_plugin(args: argparse.Namespace, root: Path) -> int:
         out, plan, write=write, force=args.force, adopt=args.adopt, manifest_rel=PLUGIN_MANIFEST
     )
     print(f"Plugin '{meta.name}' -> {out}")
-    _print_report(rep, write=write)
+    _print_report(rep, write=write and not rep.conflicts)
     if rep.conflicts:
         print("Nothing was written because of the conflicts above.", file=sys.stderr)
         return 2

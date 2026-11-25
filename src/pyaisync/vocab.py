@@ -57,8 +57,9 @@ def check_secret(where: str, key: str, value: str) -> None:
 
 # ---- hooks ----------------------------------------------------------------------------------
 
-# canonical event -> (Claude Code event, Cursor event). OpenCode has no declarative hooks.
-HOOK_EVENTS = {
+# canonical event -> (Claude Code event | None, Cursor event | None). OpenCode has no declarative hooks.
+# An event that exists in only one tool is skipped (with a warning) for the other.
+HOOK_EVENTS: dict[str, tuple[str | None, str | None]] = {
     "session_start": ("SessionStart", "sessionStart"),
     "session_end": ("SessionEnd", "sessionEnd"),
     "pre_tool_use": ("PreToolUse", "preToolUse"),
@@ -68,8 +69,35 @@ HOOK_EVENTS = {
     "subagent_start": ("SubagentStart", "subagentStart"),
     "subagent_stop": ("SubagentStop", "subagentStop"),
     "pre_compact": ("PreCompact", "preCompact"),
+    "post_tool_use_failure": ("PostToolUseFailure", "postToolUseFailure"),
+    "notification": ("Notification", None),
+    # Cursor-only events (their matcher is a regex over the event's own value, see `pattern`)
+    "before_shell_execution": (None, "beforeShellExecution"),
+    "after_shell_execution": (None, "afterShellExecution"),
+    "before_read_file": (None, "beforeReadFile"),
+    "after_file_edit": (None, "afterFileEdit"),
+    "before_mcp_execution": (None, "beforeMCPExecution"),
+    "after_mcp_execution": (None, "afterMCPExecution"),
+    "after_agent_response": (None, "afterAgentResponse"),
+    "after_agent_thought": (None, "afterAgentThought"),
 }
-TOOL_MATCHER_EVENTS = frozenset({"pre_tool_use", "post_tool_use"})
+TOOL_MATCHER_EVENTS = frozenset({"pre_tool_use", "post_tool_use", "post_tool_use_failure"})
+# Events whose `pattern` (a raw regex) is accepted: the ones only Cursor has.
+PATTERN_EVENTS = frozenset(e for e, (c, u) in HOOK_EVENTS.items() if c is None and u is not None)
+HOOKS_DIR = ".ai/hooks"  # where hook scripts live; commands refer to them by this path
+_HOOKS_PATH = re.compile(r'(?<![\w./"}])(?:\./)?\.ai/hooks/')
+
+
+def claude_command(command: str) -> str:
+    """Make `.ai/hooks/...` paths independent of Claude Code's working directory."""
+    return _HOOKS_PATH.sub('"${CLAUDE_PROJECT_DIR}"/.ai/hooks/', command)
+
+
+def referenced_scripts(command: str) -> list[str]:
+    """Paths under `.ai/hooks/` mentioned by a hook command (relative to `.ai/hooks/`)."""
+    return re.findall(r"(?<![\w./\"}])(?:\./)?\.ai/hooks/([^\s\"']+)", command)
+
+
 # Cursor tool names usable in preToolUse/postToolUse matchers (glob and web have no equivalent).
 CURSOR_TOOLS = {"read": "Read", "grep": "Grep", "edit": "Write", "shell": "Shell"}
 

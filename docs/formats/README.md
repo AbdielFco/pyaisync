@@ -139,9 +139,30 @@ Import is read-only on native files and never widens access:
 | subagent_start | SubagentStart | subagentStart |
 | subagent_stop | SubagentStop | subagentStop |
 | pre_compact | PreCompact | preCompact |
+| post_tool_use_failure | PostToolUseFailure | postToolUseFailure |
+| notification | Notification | - (skipped for Cursor) |
+| before_shell_execution | - (skipped for Claude) | beforeShellExecution |
+| after_shell_execution | - | afterShellExecution |
+| before_read_file | - | beforeReadFile |
+| after_file_edit | - | afterFileEdit |
+| before_mcp_execution | - | beforeMCPExecution |
+| after_mcp_execution | - | afterMCPExecution |
+| after_agent_response | - | afterAgentResponse |
+| after_agent_thought | - | afterAgentThought |
 
-`matcher = ["shell", "edit"]` is only accepted for `pre_tool_use` / `post_tool_use`. A tool Cursor cannot match
+`matcher = ["shell", "edit"]` (tool names) is only accepted for `pre_tool_use`, `post_tool_use` and
+`post_tool_use_failure`. The Cursor-only events filter on their own value with a raw regex, written as `pattern = "git push|rm "`
+(Cursor tests it against the shell command, the file tool name, ...; pyaisync passes it through verbatim and only for those
+events). `fail_closed = true` becomes Cursor's `failClosed` (a failing hook blocks the action); Claude Code has no such option
+(a script blocks by exiting with code 2), so it is warned about. Cursor's `loop_limit`, `type: "prompt"` hooks and the Tab hooks
+are not modelled. A tool Cursor cannot match
 (`glob`, `web`) makes the hook be **skipped for Cursor with a warning** rather than silently widened to every tool.
+
+## Hook scripts (`.ai/hooks/`)
+Hook commands are strings; the scripts they run live in `.ai/hooks/` and are **run in place, never copied**. Cursor runs project
+hooks from the project root, so `python3 .ai/hooks/gates.py` works as written. Claude Code runs a hook in the session's current
+directory, so `pyaisync` rewrites a leading `.ai/hooks/` path to `"${CLAUDE_PROJECT_DIR}"/.ai/hooks/` (placeholder documented at
+https://code.claude.com/docs/en/hooks, "Reference scripts by path"; the quotes are required in shell form).
 
 ## Canonical permission rules (source `.ai/permissions.toml`)
 `allow` / `ask` / `deny` lists of `tool` or `tool(pattern)`, with tool in `read grep glob edit shell web`.

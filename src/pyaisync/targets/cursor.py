@@ -85,6 +85,8 @@ def _hook_item(h: Hook, matcher: str | None) -> dict[str, Any]:
         item["timeout"] = h.timeout
     if matcher:
         item["matcher"] = matcher
+    if h.fail_closed:
+        item["failClosed"] = True
     return item
 
 
@@ -123,13 +125,18 @@ class Cursor:
         if feats["hooks"] and m.hooks:
             groups: dict[str, list[Any]] = {}
             for h in m.hooks:
-                matcher = cursor_matcher(h.matcher) if h.matcher else None
+                native = HOOK_EVENTS[h.event][1]
+                if native is None:
+                    warnings.append(
+                        f"hook {h.event} ({h.command}): Cursor has no such event; skipped for Cursor"
+                    )
+                    continue
+                matcher = cursor_matcher(h.matcher) if h.matcher else (h.pattern or None)
                 if h.matcher and matcher is None:
                     warnings.append(
                         f"hook {h.event} {list(h.matcher)}: Cursor cannot match glob/web tools; skipped"
                     )
                     continue
-                native = HOOK_EVENTS[h.event][1]
                 groups.setdefault(native, []).append(_hook_item(h, matcher))
                 where = f"[{matcher}]" if matcher else ""
                 notices.append(f"cursor: {native}{where} runs: {h.command}")
