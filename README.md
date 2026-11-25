@@ -3,6 +3,56 @@
 One source (`.ai/`) for the AI coding agent configuration of a repository.
 `pyaisync` transpiles it into the native files of **Claude Code**, **Cursor** and **OpenCode**.
 
+## Installation
+
+**Requirements:** Python 3.11 or newer. [`uv`](https://docs.astral.sh/uv/) is recommended but optional.
+`pyaisync` is not on PyPI yet, so install it from GitHub. Its only runtime dependency is `PyYAML`.
+
+**1. Run it without installing** (nothing is added to your system):
+
+```bash
+uvx --from git+https://github.com/AbdielFco/pyaisync pyaisync --help
+```
+
+**2. Install it as a command** (`pyaisync` on your `PATH`):
+
+```bash
+uv tool install git+https://github.com/AbdielFco/pyaisync
+pyaisync --version
+```
+
+**3. With pip** (inside a virtual environment):
+
+```bash
+pip install git+https://github.com/AbdielFco/pyaisync.git
+```
+
+**4. From a clone** (to hack on it):
+
+```bash
+git clone https://github.com/AbdielFco/pyaisync.git
+cd pyaisync
+uv sync                      # installs the project and the dev tools
+uv run pyaisync --help
+```
+
+Tips:
+- **Pin a version.** Append a tag or commit to the URL, e.g. `git+https://github.com/AbdielFco/pyaisync@<commit>`, so
+  nobody gets a different version than you reviewed.
+- **Update:** `uv tool upgrade pyaisync` (or reinstall with `--reinstall`). **Uninstall:** `uv tool uninstall pyaisync`.
+- In a Python project, add it as a dev tool instead of a global one: `uv add --dev git+https://github.com/AbdielFco/pyaisync`.
+
+### Quick start
+
+```bash
+cd your-repo
+pyaisync init                 # create .ai/ (use `init --from claude` to import an existing setup)
+# edit .ai/rules/*.md, .ai/commands/*.md, ...
+pyaisync generate --dry-run   # preview
+pyaisync generate             # write CLAUDE.md, .cursor/, AGENTS.md, ...
+pyaisync check                # in CI: fails if generated files drifted from .ai/
+```
+
 Status: **complete (phases 0-4)**: rules, commands, skills, subagents, MCP, hooks, permissions, with
 `init`, `generate`, `check`, `list`, `import` (every feature) and `plugin claude`.
 See [PLAN.md](PLAN.md) for the design and [docs/formats](docs/formats/README.md) for the native formats it targets.
@@ -57,7 +107,10 @@ flowchart TD
 Typical workflow: `init` (or `init --from <tool>` to migrate an existing setup) -> edit `.ai/` -> `generate` ->
 commit both; `check` in CI or a pre-commit hook fails when the generated files drift from `.ai/`.
 
-## Usage (uv)
+## Usage
+
+The examples below use `uv run pyaisync`, which is what you type inside a clone. If you installed the command
+(options 2 or 3 above), drop the `uv run` prefix.
 
 ```bash
 uv run pyaisync init                  # create .ai/ (detects existing targets)
