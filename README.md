@@ -5,7 +5,7 @@ One source (`.ai/`) for the AI coding agent configuration of a repository.
 
 Status: **complete (phases 0-4)**: rules, commands, skills, subagents, MCP, hooks, permissions, with
 `init`, `generate`, `check`, `list`, `import` (every feature) and `plugin claude`.
-See [PLAN.md](PLAN.md) for the full design and the upcoming phases.
+See [PLAN.md](PLAN.md) for the design and [docs/formats](docs/formats/README.md) for the native formats it targets.
 
 ## Usage (uv)
 
@@ -99,6 +99,49 @@ description = "Team tools"
 `pyaisync plugin claude` writes `dist/my-tools/` (`.claude-plugin/plugin.json`, `commands/`, `agents/`, `skills/`,
 `hooks/hooks.json`, `.mcp.json`). Rules and permissions cannot be part of a plugin and hook scripts are not bundled;
 both are reported. Same non-destructive rules as `generate`.
+
+## Scope and limitations
+
+### In scope
+- **Targets:** Claude Code, Cursor and OpenCode (V2 config schema), at **project level** only.
+- **Features:** rules, commands, skills, subagents, MCP servers, hooks, permissions; `import` of all of them; a
+  Claude Code plugin package.
+- **Guarantees:** deterministic output, no network access, nothing from your content is ever executed, and files it did
+  not generate are never overwritten.
+
+### Not in scope
+- More targets (Windsurf, Copilot, Gemini, ...). Adding one means writing an adapter and an importer.
+- User-level/global configuration (`~/.claude`, `~/.cursor`, `~/.config/opencode`).
+- Downloading rules or skills from remote repositories.
+- Running agents, hooks or MCP servers, or two-way/continuous sync (`import` is a one-off migration).
+- Cursor and OpenCode plugin packaging. OpenCode plugins are JS/TS code, not configuration; Cursor's plugin format
+  was not verified. `plugin` exists for Claude Code only.
+
+### Differences between targets
+Features a target cannot express are skipped **with a warning**, never approximated:
+
+| Feature | Limitation |
+|---|---|
+| Hooks | OpenCode has no declarative hooks (skipped). Cursor cannot match `glob`/`web` tools (that hook is skipped for Cursor). |
+| Permissions | Cursor's apply to the **Cursor CLI only** (`.cursor/cli.json`) and have no `ask`. Claude cannot express path rules for `grep`/`glob`. |
+| Subagents | Cursor has no tool allowlist: only `readonly` is derived from `tools`. A non-`inherit` `model` is passed through verbatim and warned about, because model names differ per tool. |
+| MCP | OpenCode V2 offers only Streamable HTTP, so `sse` servers are skipped for it. |
+| Rules | Claude and OpenCode read a single instructions file, so scoped rules (`globs`/`description`) become labelled sections instead of being conditionally applied. |
+| Plugin | Cannot carry project rules (a `CLAUDE.md` in a plugin is not loaded) or permissions. Hook scripts are not bundled. |
+
+### Known technical limits
+- **JSONC is refused.** `opencode.json`, `.mcp.json`, `settings.json` and similar files that contain comments are not
+  merged (that would destroy the comments). Remove the comments or manage those files by hand.
+- **JSON formatting.** A shared JSON file is rewritten with 2-space indentation, only when one of its entries changes.
+- **List items are matched by content.** If you edit by hand a hook or permission that pyaisync added, it stops being
+  recognised as generated: it is treated as yours and the regenerated item is added next to it.
+- **OpenCode V1** config (`mcp.<name>`, `permission`, `tools`) is neither generated nor imported.
+- **Import is best effort and conservative.** It skips what it cannot map exactly (regex hook matchers, non-command
+  hooks, `disallowedTools`, order-dependent OpenCode rules, WebSocket MCP servers) and reports it. It does not split a
+  large `CLAUDE.md`/`AGENTS.md`: it becomes one always-on rule.
+- **Formats move fast.** The native formats were checked against the official docs on 2026-11-25. The one entry not
+  confirmed in the docs is Cursor's `.cursor/commands/*.md`; see `docs/formats/README.md` before relying on it.
+- **Python 3.11+** is required (`tomllib`).
 
 ## Safety
 
