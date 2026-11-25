@@ -10,7 +10,7 @@ installed from GitHub. Its only runtime dependency is `PyYAML`.
 
 ### Add it to your project (recommended)
 
-Like `npm i -D`, install it as a **development dependency** of the repository whose AI configuration you want to manage:
+Install it as a **development dependency** of the Python project whose AI configuration you want to manage:
 
 ```bash
 uv add --dev git+https://github.com/AbdielFco/pyaisync
