@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+from .. import frontmatter
+from ..model import Model
+from .base import HEADER, Output, Plan, command_meta, rules_document, text
+
+
+class OpenCode:
+    name = "opencode"
+    supported = frozenset({"rules", "commands", "skills"})
+
+    def plan(self, model: Model) -> Plan:
+        m = model.for_target(self.name)
+        feats = model.config.features
+        outs: list[Output] = []
+        if feats["rules"] and m.rules:
+            outs.append(text("AGENTS.md", rules_document(m.rules)))
+        if feats["commands"]:
+            for c in sorted(m.commands, key=lambda x: x.name):
+                outs.append(
+                    text(
+                        f".opencode/commands/{c.name}.md",
+                        frontmatter.dump(command_meta(c), f"{HEADER}\n\n{c.body}"),
+                    )
+                )
+        return Plan(outs, [])
